@@ -391,6 +391,20 @@ pub fn char_to_suit(c: char) -> u8 {
     }
 }
 
+/// Converts 64 bit card mask to string representation
+pub fn mask_to_string(card_mask: u64) -> String {
+    let mut card_str = String::new();
+    for i in 0..CARD_COUNT {
+        if ((1u64 << i) & card_mask) != 0 {
+            let rank = i >> 2;
+            let suit = i & 3;
+            card_str.push(RANK_TO_CHAR[usize::from(rank)]);
+            card_str.push(SUIT_TO_CHAR[usize::from(suit)]);
+        }
+    }
+    card_str
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

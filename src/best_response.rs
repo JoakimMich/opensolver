@@ -2,7 +2,9 @@ use crate::range::*;
 use crate::postfloptree::*;
 use crate::cfr::*;
 use crate::hand_range::*;
-
+use rust_poker::constants::RANK_TO_CHAR;
+use rust_poker::constants::SUIT_TO_CHAR;
+ 
 pub struct BestResponse<'a> {
     range_manager: &'a RangeManager<'a>,
     pub oop_relative_probs: Vec<f64>,
@@ -135,7 +137,68 @@ impl<'a> BestResponseState<'a> {
             NodeType::TerminalNode(terminal_type) => {
                 *self.result = get_payoffs(self.oop, self.range_manager, self.board, self.node, self.villain_reach_probs, &terminal_type);
             },
-            NodeType::ChanceNode(_) => { 
+            NodeType::ChanceNode(deck_left) => { 
+                let hero_hands = self.range_manager.get_num_hands(self.oop, self.board);
+                *self.result = vec![0.0; hero_hands];
+                let mut results = vec![vec![0.0;hero_hands]; self.node.children.len()];
+                
+                for (count,child) in self.node.children.iter().enumerate() {
+                    let next_card = match child.node_type {
+                        NodeType::ChanceNodeCard(card) => card,
+                        _ => panic!("panicando!"),
+                    };
+                    
+                    let next_board = match next_card {
+                        Some(card) => {
+                            let rank = RANK_TO_CHAR[usize::from(card >> 2)];
+                            let suit = SUIT_TO_CHAR[usize::from(card & 3)];
+                            let mut new_board = self.board.to_string();
+                            new_board.push(rank);
+                            new_board.push(suit);
+                            new_board
+                        },
+                        _ => self.board.to_string(),
+                    };
+                    let next_board = next_board.as_str();
+                    if deck_left == 0 {
+                        let mut new_br = BestResponseState::new(self.range_manager, &mut results[count], child, self.oop, self.villain_reach_probs, next_board);
+                        new_br.run();
+                    } else {
+                        let new_villain_reach_prob = self.range_manager.get_villain_reach(self.oop, next_board, &self.villain_reach_probs);
+                        let mut new_br = BestResponseState::new(self.range_manager, &mut results[count], child, self.oop, &new_villain_reach_prob, next_board);
+                        new_br.run();
+                    }
+                }
+                
+                
+                if deck_left != 0 {
+                    for (count,child) in self.node.children.iter().enumerate() {
+                        let next_card_u8 = match child.node_type {
+                            NodeType::ChanceNodeCard(card) => card,
+                            _ => panic!("panicando"),
+                        }.unwrap();
+                        let rank = RANK_TO_CHAR[usize::from(next_card_u8 >> 2)];
+                        let suit = SUIT_TO_CHAR[usize::from(next_card_u8 & 3)];
+                        let mut new_board = self.board.to_string();
+                        new_board.push(rank);
+                        new_board.push(suit);
+                        let new_board = new_board.as_str();
+                        let reach_mapping = self.range_manager.get_reach_mapping(self.oop, new_board);
+                        
+                        for i in 0..results[count].len() {
+                            self.result[reach_mapping[i] as usize] += results[count][i] * (1.0/deck_left as f64);
+                        }
+                    }
+                } else {
+                    let mut offset = 0;
+                    for i in 0..hero_hands {
+                        for (count,child) in self.node.children.iter().enumerate() {
+                            self.result[i] += results[count][i];
+                        }
+                    }
+                }
+            }, 
+            NodeType::ChanceNodeCard(_) => { 
                 let mut new_br = BestResponseState::new(self.range_manager, self.result,  &self.node.children[0], self.oop, self.villain_reach_probs, self.board);
                 new_br.run();
             }, 

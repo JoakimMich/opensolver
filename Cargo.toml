@@ -7,3 +7,4 @@ edition = "2021"
 
 [dependencies]
 rust_poker = "0.1.13"
+permutation = "0.4.0"
