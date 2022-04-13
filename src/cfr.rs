@@ -31,7 +31,6 @@ impl<'a> CfrState<'a> {
             NodeType::ChanceNode(deck_left) => {
                 let hero_hands = self.range_manager.get_num_hands(self.oop, self.board);
                 *self.result = vec![0.0; hero_hands];
-                let mut results = vec![vec![0.0;hero_hands]; self.node.children.len()];
                 
                 let results: Vec<_> = self.node.children.par_iter_mut()
                                                             .map(|val| {
@@ -58,7 +57,7 @@ impl<'a> CfrState<'a> {
                                                                     recursive_cfr(self.range_manager, &mut results, val, self.oop, self.villain_reach_probs, next_board, self.n_iterations);
                                                                 } else {
                                                                     let new_villain_reach_prob = self.range_manager.get_villain_reach(self.oop, next_board, &self.villain_reach_probs);
-                                                                    recursive_cfr(self.range_manager, &mut results, val, self.oop, &new_villain_reach_prob, self.board, self.n_iterations);
+                                                                    recursive_cfr(self.range_manager, &mut results, val, self.oop, &new_villain_reach_prob, next_board, self.n_iterations);
                                                                 }
                                                                 results
                                                             })
