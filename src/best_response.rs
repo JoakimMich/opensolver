@@ -4,7 +4,8 @@ use crate::cfr::*;
 use crate::hand_range::*;
 use rust_poker::constants::RANK_TO_CHAR;
 use rust_poker::constants::SUIT_TO_CHAR;
- 
+use rayon::prelude::*;
+
 pub struct BestResponse<'a> {
     range_manager: &'a RangeManager<'a>,
     pub oop_relative_probs: Vec<f64>,
@@ -127,6 +128,11 @@ struct BestResponseState<'a> {
     board: &'a str,
 }
 
+fn recursive_br(range_manager: &RangeManager, results: &mut Vec<f64>, child: &Node, oop: bool, villain_reach_probs: &Vec<f64>, board: &str) {
+    let mut new_br = BestResponseState::new(range_manager, results, child, oop, villain_reach_probs, board);
+    new_br.run();
+}
+
 impl<'a> BestResponseState<'a> {
     fn new(range_manager: &'a RangeManager, result: &'a mut Vec<f64>, node: &'a Node, oop: bool, villain_reach_probs: &'a Vec<f64>, board: &'a str ) -> BestResponseState<'a> {
         BestResponseState { range_manager, result, node, oop, villain_reach_probs, board }
@@ -140,37 +146,37 @@ impl<'a> BestResponseState<'a> {
             NodeType::ChanceNode(deck_left) => { 
                 let hero_hands = self.range_manager.get_num_hands(self.oop, self.board);
                 *self.result = vec![0.0; hero_hands];
-                let mut results = vec![vec![0.0;hero_hands]; self.node.children.len()];
-                
-                for (count,child) in self.node.children.iter().enumerate() {
-                    let next_card = match child.node_type {
-                        NodeType::ChanceNodeCard(card) => card,
-                        _ => panic!("panicando!"),
-                    };
-                    
-                    let next_board = match next_card {
-                        Some(card) => {
-                            let rank = RANK_TO_CHAR[usize::from(card >> 2)];
-                            let suit = SUIT_TO_CHAR[usize::from(card & 3)];
-                            let mut new_board = self.board.to_string();
-                            new_board.push(rank);
-                            new_board.push(suit);
-                            new_board
-                        },
-                        _ => self.board.to_string(),
-                    };
-                    let next_board = next_board.as_str();
-                    if deck_left == 0 {
-                        let mut new_br = BestResponseState::new(self.range_manager, &mut results[count], child, self.oop, self.villain_reach_probs, next_board);
-                        new_br.run();
-                    } else {
-                        let new_villain_reach_prob = self.range_manager.get_villain_reach(self.oop, next_board, &self.villain_reach_probs);
-                        let mut new_br = BestResponseState::new(self.range_manager, &mut results[count], child, self.oop, &new_villain_reach_prob, next_board);
-                        new_br.run();
-                    }
-                }
-                
-                
+                let results: Vec<_> = self.node.children.par_iter()
+                                                        .map(|val| {
+                                                            let next_card = match val.node_type {
+                                                                NodeType::ChanceNodeCard(card) => card,
+                                                                _ => panic!("panicando!"),
+                                                            };
+                                                            
+                                                            let next_board = match next_card {
+                                                                Some(card) => {
+                                                                    let rank = RANK_TO_CHAR[usize::from(card >> 2)];
+                                                                    let suit = SUIT_TO_CHAR[usize::from(card & 3)];
+                                                                    let mut new_board = self.board.to_string();
+                                                                    new_board.push(rank);
+                                                                    new_board.push(suit);
+                                                                    new_board
+                                                                },
+                                                                _ => self.board.to_string(),
+                                                            };
+                                                            let next_board = next_board.as_str();
+                                                            
+                                                            let mut results = vec![0.0; hero_hands];
+                                                            if deck_left == 0 {
+                                                                recursive_br(self.range_manager, &mut results, val, self.oop, self.villain_reach_probs, next_board);
+                                                            } else {
+                                                                let new_villain_reach_prob = self.range_manager.get_villain_reach(self.oop, next_board, self.villain_reach_probs);
+                                                                recursive_br(self.range_manager, &mut results, val, self.oop, &new_villain_reach_prob, next_board);
+                                                            }
+                                                            results
+                                                        })
+                                                        .collect();
+        
                 if deck_left != 0 {
                     for (count,child) in self.node.children.iter().enumerate() {
                         let next_card_u8 = match child.node_type {
@@ -185,14 +191,13 @@ impl<'a> BestResponseState<'a> {
                         let new_board = new_board.as_str();
                         let reach_mapping = self.range_manager.get_reach_mapping(self.oop, new_board);
                         
-                        for i in 0..results[count].len() {
-                            self.result[reach_mapping[i] as usize] += results[count][i] * (1.0/deck_left as f64);
+                        for (i, mapping) in reach_mapping.iter().enumerate() {
+                            self.result[*mapping as usize] += results[count][i] * (1.0/deck_left as f64);
                         }
                     }
                 } else {
-                    let mut offset = 0;
                     for i in 0..hero_hands {
-                        for (count,child) in self.node.children.iter().enumerate() {
+                        for (count,_) in self.node.children.iter().enumerate() {
                             self.result[i] += results[count][i];
                         }
                     }
@@ -206,14 +211,15 @@ impl<'a> BestResponseState<'a> {
                 let n_actions = node_info.actions_num;                
                 if node_info.oop == self.oop {
                     let hero_hands = self.range_manager.get_num_hands(self.oop, self.board);
-                
                     *self.result = vec![f64::MIN; hero_hands];
-                    let mut results = vec![vec![0.0;hero_hands]; n_actions];
-                    
-                    for (count,child) in self.node.children.iter().enumerate() {
-                        let mut new_br = BestResponseState::new(self.range_manager, &mut results[count], child, self.oop, self.villain_reach_probs, self.board);
-                        new_br.run();
-                    }
+   
+                    let results: Vec<_> = self.node.children.par_iter()
+                                                            .map(|val| {
+                                                                let mut results = vec![0.0; hero_hands];
+                                                                recursive_br(self.range_manager, &mut results, val, self.oop, self.villain_reach_probs, self.board);
+                                                                results
+                                                            })
+                                                            .collect();
                     
                     for i in 0..hero_hands {
                         for results_j in results.iter() {
@@ -230,19 +236,22 @@ impl<'a> BestResponseState<'a> {
                     let hero_hands = self.range_manager.get_num_hands(self.oop, self.board);
                     let villain_hands = self.range_manager.get_num_hands(villain_pos, self.board);                    
                     *self.result = vec![0.0; hero_hands];
-                    let mut results = vec![vec![0.0;hero_hands]; n_actions];
-                    let mut new_villain_reach_probs = vec![vec![0.0; villain_hands]; n_actions];
-                    
-                    for (count,child) in self.node.children.iter().enumerate() {
-                        let mut offset = 0;
-                        for i in 0..villain_hands {
-                            new_villain_reach_probs[count][i] = average_strategy[offset+count] * self.villain_reach_probs[i];
-                            offset += n_actions;
-                        }
-                        
-                        let mut new_br = BestResponseState::new(self.range_manager, &mut results[count], child, self.oop, &new_villain_reach_probs[count], self.board);
-                        new_br.run();
-                    }
+       
+                    let results: Vec<_> = self.node.children.par_iter()
+                                                            .enumerate()
+                                                            .map(|(count, val)| {
+                                                                let mut results = vec![0.0; hero_hands];
+                                                                let mut offset = 0;
+                                                                let mut new_villain_reach_prob = vec![0.0; villain_hands];
+                                                                for (i, reach_prob) in new_villain_reach_prob.iter_mut().enumerate() {
+                                                                    *reach_prob = average_strategy[offset+count] * self.villain_reach_probs[i];
+                                                                    
+                                                                    offset += n_actions;
+                                                                }
+                                                                recursive_br(self.range_manager, &mut results, val, self.oop, &new_villain_reach_prob, self.board);
+                                                                results
+                                                            })
+                                                            .collect();
                     
                     for i in 0..hero_hands {
                         for results_j in results.iter() {

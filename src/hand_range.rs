@@ -113,12 +113,6 @@ impl HandRange {
             char_vec: Vec::new()
         }
     }
-    
-    /// Sorts the combos based on hand ranking (elem 3)
-    pub fn sort_ranks(&mut self) {
-        self.hands.sort_by_key(|k| k.3);
-    }
-
 
     /// remove combos that conflict with board
     pub fn remove_conflicting_combos(&mut self, board_mask: u64) {

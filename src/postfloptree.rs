@@ -44,10 +44,6 @@ impl ActionNodeInfo {
                     strategy[offset+count] = *val;
                 }
             } else {
-                //for count in offset..offset+self.actions_num {
-                //    strategy[count] = 1.0/self.actions_num as f64;
-                //    println!("1: {}",strategy[count]);
-                //}
                 for item in strategy.iter_mut().skip(offset).take(self.actions_num) {
                     *item = 1.0/self.actions_num as f64;
                 }
@@ -60,10 +56,6 @@ impl ActionNodeInfo {
     
     pub fn update_regret_sum_1(&mut self, action_utilities: &[f64], n_action: usize) {
         let mut offset = 0;
-        //for i in 0..self.hands_num {
-        //    self.regret_sum[offset+n_action] += action_utilities[i];
-        //    offset += self.actions_num;
-        //}
         for utility in action_utilities.iter() {
             self.regret_sum[offset+n_action] += utility;
             offset += self.actions_num;
@@ -174,13 +166,13 @@ pub struct SizingSchemes {
 
 pub fn recursive_build(latest_action: Option<ActionType>, sizing_schemes: &SizingSchemes, current_node: &mut Node, range_manager: &RangeManager, current_board: &str) {
     match &current_node.node_type {
-        NodeType::ChanceNode(amount_deals) => { 
+        NodeType::ChanceNode(_) => { 
             match latest_action  {
                 Some(_) => {
                     if current_board.len() == 6 {
                         // Flop, add new turn cards
                     } else if current_board.len() == 8 {
-                        for card in range_manager.get_board_deck(&current_board).iter() {
+                        for card in range_manager.get_board_deck(current_board).iter() {
                             let rank = RANK_TO_CHAR[usize::from(card >> 2)];
                             let suit = SUIT_TO_CHAR[usize::from(card & 3)];
                             let mut new_board = current_board.to_string();
@@ -253,7 +245,7 @@ pub fn recursive_build(latest_action: Option<ActionType>, sizing_schemes: &Sizin
                                 let node_type_new = if current_board.len() == 10 {
                                     NodeType::TerminalNode(TerminalType::TerminalShowdown)
                                 } else {
-                                    NodeType::ChanceNode((range_manager.get_board_deck(&current_board).len() - 4).try_into().unwrap())
+                                    NodeType::ChanceNode((range_manager.get_board_deck(current_board).len() - 4).try_into().unwrap())
                                 };
                                 let mut node_new = Node { node_type: node_type_new, children: vec![], pot_size: eff_pot_size, chance_start_stack: current_node.chance_start_stack, oop_invested: 0, ip_invested: 0, chance_start_pot: current_node.chance_start_pot };
                                 recursive_build(Some(*action), sizing_schemes, &mut node_new, range_manager, current_board);
@@ -322,7 +314,7 @@ pub fn recursive_build(latest_action: Option<ActionType>, sizing_schemes: &Sizin
                                 let node_type_new = if current_board.len() == 10 {
                                     NodeType::TerminalNode(TerminalType::TerminalShowdown)
                                 } else {
-                                    NodeType::ChanceNode((range_manager.get_board_deck(&current_board).len() - 4).try_into().unwrap())
+                                    NodeType::ChanceNode((range_manager.get_board_deck(current_board).len() - 4).try_into().unwrap())
                                 };
                                 let mut node_new = Node { node_type: node_type_new, children: vec![], pot_size: current_node.pot_size, chance_start_stack: current_node.chance_start_stack, oop_invested: 0, ip_invested: 0, chance_start_pot: current_node.chance_start_pot };
                                 recursive_build(Some(*action), sizing_schemes, &mut node_new, range_manager, current_board);
@@ -370,7 +362,7 @@ pub fn recursive_build(latest_action: Option<ActionType>, sizing_schemes: &Sizin
                                 let node_type_new = if current_board.len() == 10 {
                                     NodeType::TerminalNode(TerminalType::TerminalShowdown)
                                 } else {
-                                    NodeType::ChanceNode((range_manager.get_board_deck(&current_board).len() - 4).try_into().unwrap())
+                                    NodeType::ChanceNode((range_manager.get_board_deck(current_board).len() - 4).try_into().unwrap())
                                 };
                                 let eff_pot_size = current_node.pot_size + (sizing - min(current_node.oop_invested, current_node.ip_invested));
                                 let mut node_new = Node { node_type: node_type_new, children: vec![], pot_size: eff_pot_size, chance_start_stack: current_node.chance_start_stack, oop_invested: 0, ip_invested: 0, chance_start_pot: current_node.chance_start_pot };

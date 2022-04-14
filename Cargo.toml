@@ -8,5 +8,4 @@ edition = "2021"
 [dependencies]
 rust_poker = "0.1.13"
 permutation = "0.4.0"
-crossbeam = "0.7"
 rayon = "1.5"

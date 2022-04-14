@@ -56,7 +56,7 @@ impl<'a> CfrState<'a> {
                                                                 if deck_left == 0 {
                                                                     recursive_cfr(self.range_manager, &mut results, val, self.oop, self.villain_reach_probs, next_board, self.n_iterations);
                                                                 } else {
-                                                                    let new_villain_reach_prob = self.range_manager.get_villain_reach(self.oop, next_board, &self.villain_reach_probs);
+                                                                    let new_villain_reach_prob = self.range_manager.get_villain_reach(self.oop, next_board, self.villain_reach_probs);
                                                                     recursive_cfr(self.range_manager, &mut results, val, self.oop, &new_villain_reach_prob, next_board, self.n_iterations);
                                                                 }
                                                                 results
@@ -77,13 +77,13 @@ impl<'a> CfrState<'a> {
                         let new_board = new_board.as_str();
                         let reach_mapping = self.range_manager.get_reach_mapping(self.oop, new_board);
                         
-                        for i in 0..results[count].len() {
-                            self.result[reach_mapping[i] as usize] += results[count][i] * (1.0/deck_left as f64);
+                        for (i, mapping) in reach_mapping.iter().enumerate() {
+                            self.result[*mapping as usize] += results[count][i] * (1.0/deck_left as f64);
                         }
                     }
                 } else {
                     for i in 0..hero_hands {
-                        for (count,child) in self.node.children.iter_mut().enumerate() {
+                        for (count,_) in self.node.children.iter_mut().enumerate() {
                             self.result[i] += results[count][i];
                         }
                     }
@@ -130,8 +130,6 @@ impl<'a> CfrState<'a> {
                     let hero_hands = self.range_manager.get_num_hands(self.oop, self.board);
                     let villain_hands = self.range_manager.get_num_hands(villain_pos, self.board);                    
                     *self.result = vec![0.0; hero_hands];
-                    let mut results = vec![vec![0.0;hero_hands]; n_actions];
-                    let mut new_villain_reach_probs = vec![vec![0.0; villain_hands]; n_actions];
                     
                     let results: Vec<_> = self.node.children.par_iter_mut()
                                                             .enumerate()
@@ -139,8 +137,8 @@ impl<'a> CfrState<'a> {
                                                                 let mut results = vec![0.0; hero_hands];
                                                                 let mut offset = 0;
                                                                 let mut new_villain_reach_prob = vec![0.0; villain_hands];
-                                                                for i in 0..villain_hands {
-                                                                    new_villain_reach_prob[i] = current_strategy[offset+count] * self.villain_reach_probs[i];
+                                                                for (i, reach_prob) in new_villain_reach_prob.iter_mut().enumerate() {
+                                                                    *reach_prob = current_strategy[offset+count] * self.villain_reach_probs[i];
                                                                     
                                                                     offset += n_actions;
                                                                 }
