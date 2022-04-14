@@ -88,7 +88,7 @@ impl<'a> BestResponse<'a> {
         let oop_ev = self.get_best_response_ev(true, root);
         let ip_ev = self.get_best_response_ev(false, root);
         
-        let exploitability = (oop_ev + ip_ev) / 2.0 / (root.pot_size as f64) * 100.0;
+        let exploitability = (oop_ev/2.0 + ip_ev/2.0) / 2.0 / (root.pot_size as f64) * 100.0;
         
         println!("OOP Best Response EV: {}", oop_ev/2.0 + (root.pot_size as f64 / 2.0) );
         println!("IP Best Response EV: {}", ip_ev/2.0 + (root.pot_size as f64 / 2.0));
