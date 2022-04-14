@@ -116,9 +116,9 @@ impl<'a> CfrState<'a> {
                     }
                     
                     let mut offset = 0;
-                    for i in 0..hero_hands {
+                    for (i,result) in self.result.iter_mut().enumerate() {
                         for j in 0..n_actions {
-                            self.result[i] += current_strategy[offset+j] * results[j][i];
+                            *result += current_strategy[offset+j] * results[j][i];
                         }
                         offset += n_actions;
                     }
@@ -147,9 +147,9 @@ impl<'a> CfrState<'a> {
                                                             })
                                                             .collect();
                     
-                    for i in 0..hero_hands {
+                    for (i, result) in self.result.iter_mut().enumerate() {
                         for results_j in results.iter() {
-                            self.result[i] += results_j[i];
+                            *result += results_j[i];
                         }
                     }
                     
@@ -179,8 +179,7 @@ pub fn get_payoffs(oop: bool, range_manager: &RangeManager, board: &str, node: &
             let mut sum_win = 0.0;
             let mut j = 0;
             
-            for i in 0..hero_hands {
-                let hero_combo = hero_range[i];
+            for (i,hero_combo) in hero_range.iter().enumerate() {
                 while j < villain_hands && villain_range[j].3 < hero_combo.3  {
                     let villain_combo = villain_range[j];
                     sum_win += villain_reach_probs[j];
@@ -218,15 +217,14 @@ pub fn get_payoffs(oop: bool, range_manager: &RangeManager, board: &str, node: &
                 node.pot_size as f64
             };
             
-            for i in 0..villain_hands {
-                villain_card_sum[villain_range[i].0 as usize] += villain_reach_probs[i];
-                villain_card_sum[villain_range[i].1 as usize] += villain_reach_probs[i];
+            for (i,villain_combo) in villain_range.iter().enumerate() {
+                villain_card_sum[villain_combo.0 as usize] += villain_reach_probs[i];
+                villain_card_sum[villain_combo.1 as usize] += villain_reach_probs[i];
                 villain_sum += villain_reach_probs[i];
             }
             
             
-            for i in 0..hero_hands {
-                let hero_combo = hero_range[i];
+            for (i,hero_combo) in hero_range.iter().enumerate() {
                 let villain_reach = match hero_combo.4 {
                     Some(idx) => villain_reach_probs[idx as usize],
                     None => 0.0

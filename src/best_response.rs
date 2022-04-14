@@ -221,10 +221,10 @@ impl<'a> BestResponseState<'a> {
                                                             })
                                                             .collect();
                     
-                    for i in 0..hero_hands {
+                    for (i,result) in self.result.iter_mut().enumerate() {
                         for results_j in results.iter() {
-                            if results_j[i] > self.result[i] {
-                                self.result[i] = results_j[i];
+                            if results_j[i] > *result {
+                                *result = results_j[i];
                             }
                         }
                     }
@@ -253,9 +253,9 @@ impl<'a> BestResponseState<'a> {
                                                             })
                                                             .collect();
                     
-                    for i in 0..hero_hands {
+                    for (i, result) in self.result.iter_mut().enumerate() {
                         for results_j in results.iter() {
-                            self.result[i] += results_j[i];
+                            *result += results_j[i];
                         }
                     }
                                         
