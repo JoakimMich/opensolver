@@ -9,3 +9,9 @@ edition = "2021"
 rust_poker = "0.1.13"
 permutation = "0.4.0"
 rayon = "1.5"
+
+[profile.release]
+lto = true
+codegen-units = 1
+opt-level = 3
+panic = "abort"

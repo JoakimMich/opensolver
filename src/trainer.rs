@@ -36,7 +36,7 @@ impl<'a> Trainer<'a> {
             }
         }
         
-        println!("Elapsed: {} seconds", now.elapsed().as_secs());
+        println!("Elapsed: {} seconds", now.elapsed().as_secs_f64());
         
         //match self.root.children[0].node_type {
         //    NodeType::ActionNode(ref mut node_info) => {

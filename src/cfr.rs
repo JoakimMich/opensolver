@@ -95,65 +95,76 @@ impl<'a> CfrState<'a> {
             },            
             NodeType::ActionNode(ref mut node_info) => {
                 let n_actions = node_info.actions_num;
-                let current_strategy = node_info.get_current_strategy();
                 
                 if node_info.oop == self.oop {
                     let hero_hands = self.range_manager.get_num_hands(self.oop, self.board);
-                
-                    *self.result = vec![0.0; hero_hands];
-       
-                    let results: Vec<_> = self.node.children.par_iter_mut()
-                                                            .map(|val| {
-                                                                let mut results = vec![0.0; hero_hands];
-                                                                recursive_cfr(self.range_manager, &mut results, val, self.oop, self.villain_reach_probs, self.board, self.n_iterations);
-                                                                results
-                                                            })
-                                                            .collect();
-                    
-                    
-                    for (i, results_i) in results.iter().enumerate() {
-                        node_info.update_regret_sum_1(results_i, i)
-                    }
-                    
-                    let mut offset = 0;
-                    for (i,result) in self.result.iter_mut().enumerate() {
-                        for j in 0..n_actions {
-                            *result += current_strategy[offset+j] * results[j][i];
-                        }
-                        offset += n_actions;
-                    }
-                    
-                    node_info.update_regret_sum_2(self.result, self.n_iterations);
+					if n_actions == 1 {
+						recursive_cfr(self.range_manager, self.result, &mut self.node.children[0], self.oop, self.villain_reach_probs, self.board, self.n_iterations);
+					} else {
+						let current_strategy = node_info.get_current_strategy();
+						*self.result = vec![0.0; hero_hands];
+		   
+						let results: Vec<_> = self.node.children.par_iter_mut()
+																.map(|val| {
+																	let mut results = vec![0.0; hero_hands];
+																	recursive_cfr(self.range_manager, &mut results, val, self.oop, self.villain_reach_probs, self.board, self.n_iterations);
+																	results
+																})
+																.collect();
+						
+						
+						for (i, results_i) in results.iter().enumerate() {
+							node_info.update_regret_sum_1(results_i, i)
+						}
+						
+						let mut offset = 0;
+						
+						for (i,result) in self.result.iter_mut().enumerate() {
+							for j in 0..n_actions {
+								*result += current_strategy[offset+j] * results[j][i];
+							}
+							offset += n_actions;
+						}
+						
+						node_info.update_regret_sum_2(self.result, self.n_iterations);
+				
+					}
                     
                 } else {
                     let villain_pos = self.oop ^ true;
                     let hero_hands = self.range_manager.get_num_hands(self.oop, self.board);
-                    let villain_hands = self.range_manager.get_num_hands(villain_pos, self.board);                    
-                    *self.result = vec![0.0; hero_hands];
-                    
-                    let results: Vec<_> = self.node.children.par_iter_mut()
-                                                            .enumerate()
-                                                            .map(|(count, val)| {
-                                                                let mut results = vec![0.0; hero_hands];
-                                                                let mut offset = 0;
-                                                                let mut new_villain_reach_prob = vec![0.0; villain_hands];
-                                                                for (i, reach_prob) in new_villain_reach_prob.iter_mut().enumerate() {
-                                                                    *reach_prob = current_strategy[offset+count] * self.villain_reach_probs[i];
-                                                                    
-                                                                    offset += n_actions;
-                                                                }
-                                                                recursive_cfr(self.range_manager, &mut results, val, self.oop, &new_villain_reach_prob, self.board, self.n_iterations);
-                                                                results
-                                                            })
-                                                            .collect();
-                    
-                    for (i, result) in self.result.iter_mut().enumerate() {
-                        for results_j in results.iter() {
-                            *result += results_j[i];
-                        }
-                    }
-                    
-                    node_info.update_strategy_sum(&current_strategy, self.villain_reach_probs, self.n_iterations);
+                    let villain_hands = self.range_manager.get_num_hands(villain_pos, self.board);        
+					if n_actions == 1 {
+						recursive_cfr(self.range_manager, self.result, &mut self.node.children[0], self.oop, self.villain_reach_probs, self.board, self.n_iterations);
+					} else {
+						*self.result = vec![0.0; hero_hands];
+						let current_strategy = node_info.get_current_strategy();
+						
+						let results: Vec<_> = self.node.children.par_iter_mut()
+																.enumerate()
+																.map(|(count, val)| {
+																	let mut results = vec![0.0; hero_hands];
+																	let mut offset = 0;
+																	let mut new_villain_reach_prob = vec![0.0; villain_hands];
+																	for (i, reach_prob) in new_villain_reach_prob.iter_mut().enumerate() {
+																		*reach_prob = current_strategy[offset+count] * self.villain_reach_probs[i];
+																		
+																		offset += n_actions;
+																	}
+																	recursive_cfr(self.range_manager, &mut results, val, self.oop, &new_villain_reach_prob, self.board, self.n_iterations);
+																	results
+																})
+																.collect();
+						
+						for (i, result) in self.result.iter_mut().enumerate() {
+							for results_j in results.iter() {
+								*result += results_j[i];
+							}
+						}
+						
+						node_info.update_strategy_sum(&current_strategy, self.villain_reach_probs, self.n_iterations);
+						
+					}
                     
                 }
                 
