@@ -10,6 +10,9 @@ mod hand_range;
 mod best_response;
 mod trainer;
 
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 fn main() {
     test_river();
 }
