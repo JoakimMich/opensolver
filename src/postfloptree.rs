@@ -171,6 +171,21 @@ pub fn recursive_build(latest_action: Option<ActionType>, sizing_schemes: &Sizin
                 Some(_) => {
                     if current_board.len() == 6 {
                         // Flop, add new turn cards
+                        for card in range_manager.get_board_deck(current_board).iter() {
+                            let rank = RANK_TO_CHAR[usize::from(card >> 2)];
+                            let suit = SUIT_TO_CHAR[usize::from(card & 3)];
+                            let mut new_board = current_board.to_string();
+                            new_board.push(rank);
+                            new_board.push(suit);
+                            let new_board = new_board.as_str();
+                            
+                            let new_eff_stack = current_node.chance_start_stack - (current_node.pot_size - current_node.chance_start_pot)/2;
+                            
+                            let mut node_new = Node { node_type: NodeType::ChanceNodeCard(Some(*card)), children: vec![], pot_size: current_node.pot_size, chance_start_stack: new_eff_stack, oop_invested: 0, ip_invested: 0, chance_start_pot: current_node.pot_size };
+                            recursive_build(None, sizing_schemes, &mut node_new, range_manager, new_board);
+                            current_node.children.push(node_new);
+                        }
+                        
                     } else if current_board.len() == 8 {
                         for card in range_manager.get_board_deck(current_board).iter() {
                             let rank = RANK_TO_CHAR[usize::from(card >> 2)];

@@ -10,11 +10,14 @@ mod hand_range;
 mod best_response;
 mod trainer;
 
+use rust_poker::hand_range::{get_card_mask};
+
+
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 fn main() {
-    test_river();
+    test_flop();
 }
 
 fn test_turn() {
@@ -29,12 +32,30 @@ fn test_turn() {
     let mut root = Node::new_root(eff_stack, pot_size);
     let oop_range = HandRange::from_string("QQ+".to_string());
     let ip_range = HandRange::from_string("QQ+".to_string());
-    let tree_board = "QsJh2h8d";
+    let tree_board = "QsJh2h";
     let mut range_manager = RangeManager::new(oop_range, ip_range, tree_board);
     range_manager.initialize_ranges();
     recursive_build(None, &sizings, &mut root, &range_manager, range_manager.initial_board);
     
     //println!("{:?}",root);
+}
+
+fn test_flop() {
+    let oop_bet_sizings = vec![0, 100];
+    let ip_bet_sizings = vec![0, 100];
+    let oop_raise_sizings = vec![100];
+    let ip_raise_sizings = vec![100];
+    
+    let sizing_schemes = SizingSchemes { oop_bet_sizings, ip_bet_sizings, oop_raise_sizings, ip_raise_sizings};
+    let eff_stack = 1000;
+    let pot_size = 100;
+    let oop_range = HandRange::from_string("QQ+".to_string());
+    let ip_range = HandRange::from_string("QQ+".to_string());
+    let tree_board = "QsJh2h";
+    let mut root = Node::new_root(eff_stack, pot_size);
+    let mut rm = RangeManager::new(oop_range, ip_range, tree_board);
+    let mut trainer = Trainer::new(rm, root, &sizing_schemes);
+    trainer.train(0.5);
 }
 
 fn test_river() {
@@ -53,4 +74,5 @@ fn test_river() {
     let rm = RangeManager::new(oop_range, ip_range, tree_board);
     let mut trainer = Trainer::new(rm, root, &sizing_schemes);
     trainer.train(0.05);
+
 }
