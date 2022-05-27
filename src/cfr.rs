@@ -5,22 +5,22 @@ use rust_poker::constants::SUIT_TO_CHAR;
 use rayon::prelude::*;
 
 pub struct CfrState<'a> {
-    range_manager: &'a RangeManager<'a>,
+    range_manager: &'a RangeManager,
     result: &'a mut Vec<f64>,
     node: &'a mut Node,
     oop: bool,
     villain_reach_probs: &'a Vec<f64>,
-    board: &'a str,
+    board: &'a String,
     n_iterations: u64,
 }
 
-fn recursive_cfr(range_manager: &RangeManager, results: &mut Vec<f64>, child: &mut Node, oop: bool, villain_reach_probs: &Vec<f64>, board: &str, n_iterations: u64) {
+fn recursive_cfr(range_manager: &RangeManager, results: &mut Vec<f64>, child: &mut Node, oop: bool, villain_reach_probs: &Vec<f64>, board: &String, n_iterations: u64) {
     let mut new_cfr = CfrState::new(range_manager, results, child, oop, villain_reach_probs, board, n_iterations);
     new_cfr.run();
 }
 
 impl<'a> CfrState<'a> {
-    pub fn new(range_manager: &'a RangeManager, result: &'a mut Vec<f64>, node: &'a mut Node, oop: bool, villain_reach_probs: &'a Vec<f64>, board: &'a str, n_iterations: u64) -> CfrState<'a> {
+    pub fn new(range_manager: &'a RangeManager, result: &'a mut Vec<f64>, node: &'a mut Node, oop: bool, villain_reach_probs: &'a Vec<f64>, board: &'a String, n_iterations: u64) -> CfrState<'a> {
         CfrState { range_manager, result, node, oop, villain_reach_probs, board, n_iterations }
     }
     pub fn run(&mut self) {       
@@ -50,14 +50,13 @@ impl<'a> CfrState<'a> {
                                                                     },
                                                                     _ => self.board.to_string(),
                                                                 };
-                                                                let next_board = next_board.as_str();
                                                                 
                                                                 let mut results = vec![0.0; hero_hands];
                                                                 if deck_left == 0 {
-                                                                    recursive_cfr(self.range_manager, &mut results, val, self.oop, self.villain_reach_probs, next_board, self.n_iterations);
+                                                                    recursive_cfr(self.range_manager, &mut results, val, self.oop, self.villain_reach_probs, &next_board, self.n_iterations);
                                                                 } else {
-                                                                    let new_villain_reach_prob = self.range_manager.get_villain_reach(self.oop, next_board, self.villain_reach_probs);
-                                                                    recursive_cfr(self.range_manager, &mut results, val, self.oop, &new_villain_reach_prob, next_board, self.n_iterations);
+                                                                    let new_villain_reach_prob = self.range_manager.get_villain_reach(self.oop, &next_board, self.villain_reach_probs);
+                                                                    recursive_cfr(self.range_manager, &mut results, val, self.oop, &new_villain_reach_prob, &next_board, self.n_iterations);
                                                                 }
                                                                 results
                                                             })
@@ -74,8 +73,7 @@ impl<'a> CfrState<'a> {
                         let mut new_board = self.board.to_string();
                         new_board.push(rank);
                         new_board.push(suit);
-                        let new_board = new_board.as_str();
-                        let reach_mapping = self.range_manager.get_reach_mapping(self.oop, new_board);
+                        let reach_mapping = self.range_manager.get_reach_mapping(self.oop, &new_board);
                         
                         for (i, mapping) in reach_mapping.iter().enumerate() {
                             self.result[*mapping as usize] += results[count][i] * (1.0/deck_left as f64);
@@ -173,7 +171,7 @@ impl<'a> CfrState<'a> {
     }
 }
 
-pub fn get_payoffs(oop: bool, range_manager: &RangeManager, board: &str, node: &Node, villain_reach_probs: &[f64], terminal_type: &TerminalType) -> Vec<f64> {
+pub fn get_payoffs(oop: bool, range_manager: &RangeManager, board: &String, node: &Node, villain_reach_probs: &[f64], terminal_type: &TerminalType) -> Vec<f64> {
     let villain_pos = oop ^ true;
     let hero_hands = range_manager.get_num_hands(oop, board);
     let villain_hands = range_manager.get_num_hands(villain_pos, board);

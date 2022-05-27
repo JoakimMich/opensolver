@@ -4,15 +4,15 @@ use crate::cfr::*;
 use crate::best_response::*;
 use std::time::Instant;
 
-pub struct Trainer<'a> {
-    range_manager: RangeManager<'a>,
+pub struct Trainer {
+    range_manager: RangeManager,
     root: Node,
 }
 
-impl<'a> Trainer<'a> {
-    pub fn new(mut range_manager: RangeManager<'a>, mut root: Node, sizings: &SizingSchemes) -> Self {
+impl Trainer {
+    pub fn new(mut range_manager: RangeManager, mut root: Node, sizings: &SizingSchemes) -> Self {
         range_manager.initialize_ranges();
-        recursive_build(None, sizings, &mut root, &range_manager, range_manager.initial_board);
+        recursive_build(None, sizings, &mut root, &range_manager, &range_manager.initial_board);
         Trainer { range_manager, root }
     }
     
@@ -25,8 +25,8 @@ impl<'a> Trainer<'a> {
         best_response.set_relative_probablities(false);
         let now = Instant::now();
         for i in 0..n_iterations {
-            cfr_aux(true, &mut self.root, i, &self.range_manager, self.range_manager.initial_board);
-            cfr_aux(false, &mut self.root, i, &self.range_manager, self.range_manager.initial_board);
+            cfr_aux(true, &mut self.root, i, &self.range_manager);
+            cfr_aux(false, &mut self.root, i, &self.range_manager);
             if i % 25 == 0 {
                 println!("Iteration {}",i);
                 let exploitability = best_response.print_exploitability(&self.root);
@@ -54,11 +54,11 @@ impl<'a> Trainer<'a> {
     }
 }
 
-fn cfr_aux(pos: bool, root: &mut Node, n_iteration: u64, range_manager: &RangeManager, board: &str) {
+fn cfr_aux(pos: bool, root: &mut Node, n_iteration: u64, range_manager: &RangeManager) {
     let villain_pos = pos ^ true;
     let villain_reach_probs = range_manager.get_initial_reach_probs(villain_pos);
     
     let mut results = vec![];
-    let mut cfr_start = CfrState::new(range_manager, &mut results, root, pos, &villain_reach_probs, board, n_iteration);
+    let mut cfr_start = CfrState::new(range_manager, &mut results, root, pos, &villain_reach_probs, &range_manager.initial_board, n_iteration);
     cfr_start.run();
 }

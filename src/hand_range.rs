@@ -13,6 +13,8 @@ use std::iter::FromIterator;
 use rust_poker::constants::*;
 use rust_poker::hand_evaluator::{Hand,evaluate};
 
+use crate::isomorphism::*;
+
 /// A single player hand
 /// 0: index of card 1
 /// 1: index of card 2
@@ -118,6 +120,52 @@ impl HandRange {
     pub fn remove_conflicting_combos(&mut self, board_mask: u64) {
         self.hands
             .retain(|x| (((1u64 << x.0) | (1u64 << x.1)) & board_mask) == 0);
+    }
+    
+    // adjust range based on isomorphism
+    pub fn remove_isomorphic(&mut self, board: &String) {
+        let mut suits_remove = vec![];
+        let mut combos_add = vec![];
+        
+        let iso_mapping = isomorphism_mapping(board);
+        for (from_suit, to_suit) in &iso_mapping {
+            if to_suit.is_lowercase() && (from_suit != to_suit) {
+                suits_remove.push(*from_suit);
+            }
+            
+            if to_suit.is_uppercase() {
+                let to_suit_lower = to_suit.to_lowercase().to_string().chars().last().unwrap();
+                
+                for c in self.hands.iter() {
+                    let mut c1 = c.0;
+                    let mut c2 = c.1;
+                    
+                    if &SUIT_TO_CHAR[usize::from(c1 & 3)] == &to_suit_lower {
+                        let new_suit = c1 & 3 + c1 & 3 - char_to_suit(*from_suit);
+                        let rank = c1 >> 2;
+                        c1 = rank + new_suit;
+                    }
+                    
+                    if &SUIT_TO_CHAR[usize::from(c2 & 3)] == &to_suit_lower {
+                        let new_suit = c2 & 3 + c2 & 3 - char_to_suit(*from_suit);
+                        let rank = c2 >> 2;
+                        c2 = rank + new_suit;
+                    }
+                    
+                    if &SUIT_TO_CHAR[usize::from(c1 & 3)] == &to_suit_lower || &SUIT_TO_CHAR[usize::from(c2 & 3)] == &to_suit_lower {
+                        let new_combo = Combo(c1, c2, c.2, c.3, c.4);
+                        combos_add.push(new_combo);
+                    }
+                }
+            }
+        }
+        
+        for c in combos_add.iter() {
+            self.hands.push(*c);
+        }
+        
+        self.hands
+            .retain(|x| (suits_remove.contains(&SUIT_TO_CHAR[usize::from(x.0 & 3)]) == false ) && (suits_remove.contains(&SUIT_TO_CHAR[usize::from(x.1 & 3)]) == false ) );
     }
 
     /// Create a Handrange from a string

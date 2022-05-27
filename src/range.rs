@@ -1,16 +1,20 @@
 use rust_poker::hand_range::{get_card_mask};
 use std::collections::HashMap;
+
 use crate::hand_range::*;
+use crate::isomorphism::*;
+
 use rust_poker::hand_evaluator::{Hand};
 use rust_poker::constants::RANK_TO_CHAR;
 use rust_poker::constants::SUIT_TO_CHAR;
+
 extern crate permutation;
 
 #[derive(Debug)]
-pub struct RangeManager<'a> {
+pub struct RangeManager {
     pub oop_board_range: HashMap<(u64, Option<u8>), HandRange>,
     pub ip_board_range: HashMap<(u64, Option<u8>), HandRange>,
-    pub initial_board: &'a str,
+    pub initial_board: String,
     pub oop_joint_combos: Vec<Option<usize>>,
     pub ip_joint_combos: Vec<Option<usize>>,
     pub board_deck: HashMap<(u64, Option<u8>), Vec<u8>>,
@@ -18,7 +22,7 @@ pub struct RangeManager<'a> {
     ip_reach_mapping: HashMap<(u64, Option<u8>), Vec<u16>>,
 }
 
-fn board_to_u8(board: &str) -> Vec<u8> {
+fn board_to_u8(board: &String) -> Vec<u8> {
     let mut u8_vec: Vec<u8> = vec![];
     
     for i in (0..board.len()).step_by(2) {
@@ -45,53 +49,55 @@ fn u8_to_board(u8_board: Vec<u8>) -> String {
     board
 }
 
-impl<'a> RangeManager<'a> {
+impl RangeManager {
     pub fn initialize_ranges(&mut self) {
-        let board_mask = get_card_mask(self.initial_board);
+        let board_mask = get_card_mask(&self.initial_board);
 
         self.oop_board_range.get_mut(&(board_mask, None)).unwrap().remove_conflicting_combos(board_mask);
         self.ip_board_range.get_mut(&(board_mask, None)).unwrap().remove_conflicting_combos(board_mask);
         
         if self.initial_board.len() == 6 {
-            let turn_cards = self.get_board_deck(self.initial_board).clone();
+            let turn_cards = self.get_board_deck(&self.initial_board).clone();
             for card in turn_cards.iter() {
                 let rank = RANK_TO_CHAR[usize::from(card >> 2)];
                 let suit = SUIT_TO_CHAR[usize::from(card & 3)];
-                let mut new_board = self.initial_board.to_string();
+                let mut new_board = self.initial_board.clone();
                 new_board.push(rank);
                 new_board.push(suit);
-                let new_board = new_board.as_str();
-                let new_board_mask = get_card_mask(new_board);
+                let new_board_mask = get_card_mask(&new_board);
                 self.oop_board_range.insert((new_board_mask, Some(*card)), self.oop_board_range.get(&(board_mask, None)).unwrap().clone());
                 self.ip_board_range.insert((new_board_mask, Some(*card)), self.ip_board_range.get(&(board_mask, None)).unwrap().clone());
+                self.oop_board_range.get_mut(&(new_board_mask, Some(*card))).unwrap().remove_isomorphic(&new_board);
                 self.oop_board_range.get_mut(&(new_board_mask, Some(*card))).unwrap().remove_conflicting_combos(new_board_mask);
+                self.ip_board_range.get_mut(&(new_board_mask, Some(*card))).unwrap().remove_isomorphic(&new_board);
                 self.ip_board_range.get_mut(&(new_board_mask, Some(*card))).unwrap().remove_conflicting_combos(new_board_mask);
                 
                 let river_cards = self.get_board_deck(&new_board).clone();
                 for river_card in river_cards.iter() {
                     let rank = RANK_TO_CHAR[usize::from(river_card >> 2)];
                     let suit = SUIT_TO_CHAR[usize::from(river_card & 3)];
-                    let mut new_board = new_board.to_string();
+                    let mut new_board = new_board.clone();
                     new_board.push(rank);
                     new_board.push(suit);
                     let river_board_mask = get_card_mask(&new_board);
                     self.oop_board_range.insert((river_board_mask, Some(*card)), self.oop_board_range.get(&(new_board_mask, Some(*card))).unwrap().clone());
                     self.ip_board_range.insert((river_board_mask, Some(*card)), self.ip_board_range.get(&(new_board_mask, Some(*card))).unwrap().clone());
+                    self.oop_board_range.get_mut(&(river_board_mask, Some(*card))).unwrap().remove_isomorphic(&new_board);
                     self.oop_board_range.get_mut(&(river_board_mask, Some(*card))).unwrap().remove_conflicting_combos(river_board_mask);
+                    self.ip_board_range.get_mut(&(river_board_mask, Some(*card))).unwrap().remove_isomorphic(&new_board);
                     self.ip_board_range.get_mut(&(river_board_mask, Some(*card))).unwrap().remove_conflicting_combos(river_board_mask);
                 }
             }
             
         } else if self.initial_board.len() == 8 {
-            let river_cards = self.get_board_deck(self.initial_board).clone();
+            let river_cards = self.get_board_deck(&self.initial_board).clone();
             for card in river_cards.iter() {
                 let rank = RANK_TO_CHAR[usize::from(card >> 2)];
                 let suit = SUIT_TO_CHAR[usize::from(card & 3)];
-                let mut new_board = self.initial_board.to_string();
+                let mut new_board = self.initial_board.clone();
                 new_board.push(rank);
                 new_board.push(suit);
-                let new_board = new_board.as_str();
-                let new_board_mask = get_card_mask(new_board);
+                let new_board_mask = get_card_mask(&new_board);
                 self.oop_board_range.insert((new_board_mask, None), self.oop_board_range.get(&(board_mask, None)).unwrap().clone());
                 self.ip_board_range.insert((new_board_mask, None), self.ip_board_range.get(&(board_mask, None)).unwrap().clone());
                 self.oop_board_range.get_mut(&(new_board_mask, None)).unwrap().remove_conflicting_combos(new_board_mask);
@@ -107,47 +113,71 @@ impl<'a> RangeManager<'a> {
         self.update_joints();
     }
     
-    pub fn new(oop_starting_hands: HandRange, ip_starting_hands: HandRange, initial_board: &str) -> RangeManager {
+    pub fn new(mut oop_starting_hands: HandRange, mut ip_starting_hands: HandRange, initial_board: String) -> RangeManager {
         let mut oop_board_range = HashMap::new();
         let mut ip_board_range = HashMap::new();
         let oop_reach_mapping = HashMap::new();
         let ip_reach_mapping = HashMap::new();
         let mut board_deck = HashMap::new();
+        let initial_board = normalize_flop(&initial_board);
+        
         if initial_board.len() != 6 {
-            let board_mask = get_card_mask(initial_board);
+            let board_mask = get_card_mask(&initial_board);
             oop_board_range.insert((board_mask, None), oop_starting_hands);
             ip_board_range.insert((board_mask, None), ip_starting_hands);
             if initial_board.len() == 8 {
                 let card_deck_left: Vec<u8> = (0..52).collect();
-                let board_u8 = board_to_u8(initial_board);
+                let board_u8 = board_to_u8(&initial_board);
                 let card_deck_left: Vec<u8> = card_deck_left.iter().filter(|&x| !board_u8.contains(x)).cloned().collect();
                 board_deck.insert((board_mask, None), card_deck_left);
             }
             
         } else {
             // do isomorphic stuff (normalize init board, add only neccesary suits)
-            let board_mask = get_card_mask(initial_board);
+            let board_mask = get_card_mask(&initial_board);
+            oop_starting_hands.remove_isomorphic(&initial_board);
+            ip_starting_hands.remove_isomorphic(&initial_board);
             oop_board_range.insert((board_mask, None), oop_starting_hands);
             ip_board_range.insert((board_mask, None), ip_starting_hands);
             
+            let mut suits_remove = vec![];
+            let iso_mapping = isomorphism_mapping(&initial_board);
+            
+            for (from_suit, to_suit) in &iso_mapping {
+                if to_suit.is_lowercase() && (from_suit != to_suit) {
+                    suits_remove.push(*from_suit);
+                }
+            }
+            
             let card_deck_left: Vec<u8> = (0..52).collect();
-            let board_u8 = board_to_u8(initial_board);
-            let card_deck_left: Vec<u8> = card_deck_left.iter().filter(|&x| !board_u8.contains(x)).cloned().collect();
+            let board_u8 = board_to_u8(&initial_board);
+            let mut card_deck_left: Vec<u8> = card_deck_left.iter().filter(|&x| !board_u8.contains(x)).cloned().collect();
+            card_deck_left.retain(|x| suits_remove.contains(&SUIT_TO_CHAR[usize::from(x & 3)]) == false);
+            
             let card_deck_left_copy = card_deck_left.clone();
             board_deck.insert((board_mask, None), card_deck_left);
             
             for u8_card in card_deck_left_copy.iter() {
                 let rank = RANK_TO_CHAR[usize::from(u8_card >> 2)];
                 let suit = SUIT_TO_CHAR[usize::from(u8_card & 3)];
-                let mut new_board = initial_board.to_string();
+                let mut new_board = initial_board.clone();
                 new_board.push(rank);
                 new_board.push(suit);
-                let new_board = new_board.as_str();
                 let board_mask = get_card_mask(&new_board);
                 
+                let mut suits_remove = vec![];
+                let iso_mapping = isomorphism_mapping(&new_board);
+                
+                for (from_suit, to_suit) in &iso_mapping {
+                    if to_suit.is_lowercase() && (from_suit != to_suit) {
+                        suits_remove.push(*from_suit);
+                    }
+                }
+                
                 let card_deck_left: Vec<u8> = (0..52).collect();
-                let board_u8 = board_to_u8(new_board);
-                let card_deck_left: Vec<u8> = card_deck_left.iter().filter(|&x| !board_u8.contains(x)).cloned().collect();
+                let board_u8 = board_to_u8(&new_board);
+                let mut card_deck_left: Vec<u8> = card_deck_left.iter().filter(|&x| !board_u8.contains(x)).cloned().collect();
+                card_deck_left.retain(|x| suits_remove.contains(&SUIT_TO_CHAR[usize::from(x & 3)]) == false);
                 board_deck.insert((board_mask, Some(*u8_card)), card_deck_left);
                 
             }
@@ -158,7 +188,7 @@ impl<'a> RangeManager<'a> {
         RangeManager { oop_board_range, ip_board_range, initial_board, oop_joint_combos, ip_joint_combos, board_deck, oop_reach_mapping, ip_reach_mapping }
     }
     
-    pub fn get_board_deck(&self, board: &str) -> &Vec<u8> {
+    pub fn get_board_deck(&self, board: &String) -> &Vec<u8> {
         let turn_card = if self.initial_board.len() == 6 && board.len() == 8 {
             let u8_board = board_to_u8(&board);
             Some(u8_board[3])
@@ -166,12 +196,12 @@ impl<'a> RangeManager<'a> {
             None
         };
         
-        let board_mask = get_card_mask(board);
+        let board_mask = get_card_mask(&board);
         self.board_deck.get(&(board_mask, turn_card)).unwrap()
     }
     
-    pub fn get_reach_mapping(&self, oop: bool, board: &str) -> &Vec<u16> {
-        let board_mask = get_card_mask(board);
+    pub fn get_reach_mapping(&self, oop: bool, board: &String) -> &Vec<u16> {
+        let board_mask = get_card_mask(&board);
         let turn_card = if self.initial_board.len() == 6 && board.len() > 6 {
             let u8_board = board_to_u8(&board);
             Some(u8_board[3])
@@ -185,9 +215,9 @@ impl<'a> RangeManager<'a> {
         }
     }
     
-    pub fn get_villain_reach(&self, oop: bool, board: &str, current_reach: &[f64]) -> Vec<f64> {
+    pub fn get_villain_reach(&self, oop: bool, board: &String, current_reach: &[f64]) -> Vec<f64> {
         let villain_pos = oop ^ true;
-        let reach_mapping = self.get_reach_mapping(villain_pos, board);
+        let reach_mapping = self.get_reach_mapping(villain_pos, &board);
         let mut new_reach = vec![0.0; reach_mapping.len()];
         for (count,reach) in reach_mapping.iter().enumerate() {
             new_reach[count] = current_reach[*reach as usize];
@@ -248,7 +278,7 @@ impl<'a> RangeManager<'a> {
             
             // Turns when solved from flop
             if community_cards == 4 && self.initial_board.len() != 8 {
-                let flop_range = &oop_hashmap.get(&(get_card_mask(self.initial_board), None)).unwrap().hands;
+                let flop_range = &oop_hashmap.get(&(get_card_mask(&self.initial_board), None)).unwrap().hands;
                 let mut j = 0;
                 let mut reach_probs = vec![0; value.hands.len()];
                 for (count, combo) in value.hands.iter().enumerate() {
@@ -266,12 +296,12 @@ impl<'a> RangeManager<'a> {
             // Rivers when solved from flop or turn 
             
             let turn_range = if self.initial_board.len() == 6 {
-                let mut flop_board = board_to_u8(self.initial_board);
+                let mut flop_board = board_to_u8(&self.initial_board);
                 flop_board.push(key.1.unwrap());
                 let turn_mask = get_card_mask(&u8_to_board(flop_board));
                 &oop_hashmap.get(&(turn_mask, key.1)).unwrap().hands
             } else {
-                &oop_hashmap.get(&(get_card_mask(self.initial_board), None)).unwrap().hands
+                &oop_hashmap.get(&(get_card_mask(&self.initial_board), None)).unwrap().hands
             };
 
             
@@ -322,7 +352,7 @@ impl<'a> RangeManager<'a> {
             
             // Turns when solved from flop
             if community_cards == 4 && self.initial_board.len() != 8 {
-                let flop_range = &ip_hashmap.get(&(get_card_mask(self.initial_board), None)).unwrap().hands;
+                let flop_range = &ip_hashmap.get(&(get_card_mask(&self.initial_board), None)).unwrap().hands;
                 let mut j = 0;
                 let mut reach_probs = vec![0; value.hands.len()];
                 for (count, combo) in value.hands.iter().enumerate() {
@@ -340,12 +370,12 @@ impl<'a> RangeManager<'a> {
             // Rivers when solved from flop or turn 
             
             let turn_range = if self.initial_board.len() == 6 {
-                let mut flop_board = board_to_u8(self.initial_board);
+                let mut flop_board = board_to_u8(&self.initial_board);
                 flop_board.push(key.1.unwrap());
                 let turn_mask = get_card_mask(&u8_to_board(flop_board));
                 &ip_hashmap.get(&(turn_mask, key.1)).unwrap().hands
             } else {
-                &ip_hashmap.get(&(get_card_mask(self.initial_board), None)).unwrap().hands
+                &ip_hashmap.get(&(get_card_mask(&self.initial_board), None)).unwrap().hands
             };
             
             let mut j = 0;
@@ -372,8 +402,8 @@ impl<'a> RangeManager<'a> {
         }
     }
     
-    pub fn get_range(&self, oop: bool, board: &str) -> &HandRange {
-        let board_mask = get_card_mask(board);
+    pub fn get_range(&self, oop: bool, board: &String) -> &HandRange {
+        let board_mask = get_card_mask(&board);
         let turn_card = if self.initial_board.len() == 6 && board.len() > 6 {
             let u8_board = board_to_u8(&board);
             Some(u8_board[3])
@@ -387,8 +417,8 @@ impl<'a> RangeManager<'a> {
         }
     }
     
-    pub fn get_num_hands(&self, oop: bool, board: &str) -> usize {
-        let board_mask = get_card_mask(board);
+    pub fn get_num_hands(&self, oop: bool, board: &String) -> usize {
+        let board_mask = get_card_mask(&board);
         let turn_card = if self.initial_board.len() == 6 && board.len() > 6 {
             let u8_board = board_to_u8(&board);
             Some(u8_board[3])
@@ -403,7 +433,7 @@ impl<'a> RangeManager<'a> {
     }
     
     pub fn get_initial_reach_probs(&self, oop: bool) -> Vec<f64> {
-        let board_mask = get_card_mask(self.initial_board);
+        let board_mask = get_card_mask(&self.initial_board);
         
         match oop {
             true => {
