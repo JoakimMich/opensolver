@@ -10,53 +10,41 @@ pub struct CfrState<'a> {
     node: &'a mut Node,
     oop: bool,
     villain_reach_probs: &'a Vec<f64>,
-    board: &'a String,
+    board_masks: (u64, Option<u64>),
     n_iterations: u64,
 }
 
-fn recursive_cfr(range_manager: &RangeManager, results: &mut Vec<f64>, child: &mut Node, oop: bool, villain_reach_probs: &Vec<f64>, board: &String, n_iterations: u64) {
-    let mut new_cfr = CfrState::new(range_manager, results, child, oop, villain_reach_probs, board, n_iterations);
+fn recursive_cfr(range_manager: &RangeManager, results: &mut Vec<f64>, child: &mut Node, oop: bool, villain_reach_probs: &Vec<f64>, board_masks: (u64, Option<u64>), n_iterations: u64) {
+    let mut new_cfr = CfrState::new(range_manager, results, child, oop, villain_reach_probs, board_masks, n_iterations);
     new_cfr.run();
 }
 
 impl<'a> CfrState<'a> {
-    pub fn new(range_manager: &'a RangeManager, result: &'a mut Vec<f64>, node: &'a mut Node, oop: bool, villain_reach_probs: &'a Vec<f64>, board: &'a String, n_iterations: u64) -> CfrState<'a> {
-        CfrState { range_manager, result, node, oop, villain_reach_probs, board, n_iterations }
+    pub fn new(range_manager: &'a RangeManager, result: &'a mut Vec<f64>, node: &'a mut Node, oop: bool, villain_reach_probs: &'a Vec<f64>, board_masks: (u64, Option<u64>), n_iterations: u64) -> CfrState<'a> {
+        CfrState { range_manager, result, node, oop, villain_reach_probs, board_masks, n_iterations }
     }
     pub fn run(&mut self) {       
         match self.node.node_type {
             NodeType::TerminalNode(terminal_type) => {
-                *self.result = get_payoffs(self.oop, self.range_manager, self.board, self.node, self.villain_reach_probs, &terminal_type);
+                *self.result = get_payoffs(self.oop, self.range_manager, self.board_masks, self.node, self.villain_reach_probs, &terminal_type);
             },
             NodeType::ChanceNode(deck_left) => {
-                let hero_hands = self.range_manager.get_num_hands(self.oop, self.board);
+                let hero_hands = self.range_manager.get_num_hands(self.oop, self.board_masks.0, self.board_masks.1);
                 *self.result = vec![0.0; hero_hands];
                 
                 let results: Vec<_> = self.node.children.par_iter_mut()
                                                             .map(|val| {
-                                                                let next_card = match val.node_type {
-                                                                    NodeType::ChanceNodeCard(card) => card,
+                                                                let new_masks = match val.node_type {
+                                                                    NodeType::ChanceNodeCard((new,old)) => (new,old),
                                                                     _ => panic!("panicando!"),
-                                                                };
-                                                                
-                                                                let next_board = match next_card {
-                                                                    Some(card) => {
-                                                                        let rank = RANK_TO_CHAR[usize::from(card >> 2)];
-                                                                        let suit = SUIT_TO_CHAR[usize::from(card & 3)];
-                                                                        let mut new_board = self.board.to_string();
-                                                                        new_board.push(rank);
-                                                                        new_board.push(suit);
-                                                                        new_board
-                                                                    },
-                                                                    _ => self.board.to_string(),
                                                                 };
                                                                 
                                                                 let mut results = vec![0.0; hero_hands];
                                                                 if deck_left == 0 {
-                                                                    recursive_cfr(self.range_manager, &mut results, val, self.oop, self.villain_reach_probs, &next_board, self.n_iterations);
+                                                                    recursive_cfr(self.range_manager, &mut results, val, self.oop, self.villain_reach_probs, new_masks, self.n_iterations);
                                                                 } else {
-                                                                    let new_villain_reach_prob = self.range_manager.get_villain_reach(self.oop, &next_board, self.villain_reach_probs);
-                                                                    recursive_cfr(self.range_manager, &mut results, val, self.oop, &new_villain_reach_prob, &next_board, self.n_iterations);
+                                                                    let new_villain_reach_prob = self.range_manager.get_villain_reach(self.oop, new_masks.0, new_masks.1, self.villain_reach_probs);
+                                                                    recursive_cfr(self.range_manager, &mut results, val, self.oop, &new_villain_reach_prob, new_masks, self.n_iterations);
                                                                 }
                                                                 results
                                                             })
@@ -64,16 +52,11 @@ impl<'a> CfrState<'a> {
                 
                 if deck_left != 0 {
                     for (count,child) in self.node.children.iter_mut().enumerate() {
-                        let next_card_u8 = match child.node_type {
-                            NodeType::ChanceNodeCard(card) => card,
-                            _ => panic!("panicando"),
-                        }.unwrap();
-                        let rank = RANK_TO_CHAR[usize::from(next_card_u8 >> 2)];
-                        let suit = SUIT_TO_CHAR[usize::from(next_card_u8 & 3)];
-                        let mut new_board = self.board.to_string();
-                        new_board.push(rank);
-                        new_board.push(suit);
-                        let reach_mapping = self.range_manager.get_reach_mapping(self.oop, &new_board);
+                        let new_masks = match child.node_type {
+                            NodeType::ChanceNodeCard((new,old)) => (new,old),
+                            _ => panic!("panicando!"),
+                        };
+                        let reach_mapping = self.range_manager.get_reach_mapping(self.oop, new_masks.0, new_masks.1);
                         
                         for (i, mapping) in reach_mapping.iter().enumerate() {
                             self.result[*mapping as usize] += results[count][i] * (1.0/deck_left as f64);
@@ -88,16 +71,16 @@ impl<'a> CfrState<'a> {
                 }
             },
             NodeType::ChanceNodeCard(_) => { 
-                let mut new_cfr = CfrState::new(self.range_manager, self.result, &mut self.node.children[0], self.oop, self.villain_reach_probs, self.board, self.n_iterations);
+                let mut new_cfr = CfrState::new(self.range_manager, self.result, &mut self.node.children[0], self.oop, self.villain_reach_probs, self.board_masks, self.n_iterations);
                 new_cfr.run();
             },            
             NodeType::ActionNode(ref mut node_info) => {
                 let n_actions = node_info.actions_num;
                 
                 if node_info.oop == self.oop {
-                    let hero_hands = self.range_manager.get_num_hands(self.oop, self.board);
+                    let hero_hands = self.range_manager.get_num_hands(self.oop, self.board_masks.0, self.board_masks.1);
 					if n_actions == 1 {
-						recursive_cfr(self.range_manager, self.result, &mut self.node.children[0], self.oop, self.villain_reach_probs, self.board, self.n_iterations);
+						recursive_cfr(self.range_manager, self.result, &mut self.node.children[0], self.oop, self.villain_reach_probs, self.board_masks, self.n_iterations);
 					} else {
 						let current_strategy = node_info.get_current_strategy();
 						*self.result = vec![0.0; hero_hands];
@@ -105,7 +88,7 @@ impl<'a> CfrState<'a> {
 						let results: Vec<_> = self.node.children.par_iter_mut()
 																.map(|val| {
 																	let mut results = vec![0.0; hero_hands];
-																	recursive_cfr(self.range_manager, &mut results, val, self.oop, self.villain_reach_probs, self.board, self.n_iterations);
+																	recursive_cfr(self.range_manager, &mut results, val, self.oop, self.villain_reach_probs, self.board_masks, self.n_iterations);
 																	results
 																})
 																.collect();
@@ -130,10 +113,10 @@ impl<'a> CfrState<'a> {
                     
                 } else {
                     let villain_pos = self.oop ^ true;
-                    let hero_hands = self.range_manager.get_num_hands(self.oop, self.board);
-                    let villain_hands = self.range_manager.get_num_hands(villain_pos, self.board);        
+                    let hero_hands = self.range_manager.get_num_hands(self.oop, self.board_masks.0, self.board_masks.1);
+                    let villain_hands = self.range_manager.get_num_hands(villain_pos, self.board_masks.0, self.board_masks.1);        
 					if n_actions == 1 {
-						recursive_cfr(self.range_manager, self.result, &mut self.node.children[0], self.oop, self.villain_reach_probs, self.board, self.n_iterations);
+						recursive_cfr(self.range_manager, self.result, &mut self.node.children[0], self.oop, self.villain_reach_probs, self.board_masks, self.n_iterations);
 					} else {
 						*self.result = vec![0.0; hero_hands];
 						let current_strategy = node_info.get_current_strategy();
@@ -149,7 +132,7 @@ impl<'a> CfrState<'a> {
 																		
 																		offset += n_actions;
 																	}
-																	recursive_cfr(self.range_manager, &mut results, val, self.oop, &new_villain_reach_prob, self.board, self.n_iterations);
+																	recursive_cfr(self.range_manager, &mut results, val, self.oop, &new_villain_reach_prob, self.board_masks, self.n_iterations);
 																	results
 																})
 																.collect();
@@ -171,12 +154,12 @@ impl<'a> CfrState<'a> {
     }
 }
 
-pub fn get_payoffs(oop: bool, range_manager: &RangeManager, board: &String, node: &Node, villain_reach_probs: &[f64], terminal_type: &TerminalType) -> Vec<f64> {
+pub fn get_payoffs(oop: bool, range_manager: &RangeManager, board_masks: (u64, Option<u64>), node: &Node, villain_reach_probs: &[f64], terminal_type: &TerminalType) -> Vec<f64> {
     let villain_pos = oop ^ true;
-    let hero_hands = range_manager.get_num_hands(oop, board);
-    let villain_hands = range_manager.get_num_hands(villain_pos, board);
-    let hero_range = &range_manager.get_range(oop, board).hands;
-    let villain_range = &range_manager.get_range(villain_pos, board).hands;
+    let hero_hands = range_manager.get_num_hands(oop, board_masks.0, board_masks.1);
+    let villain_hands = range_manager.get_num_hands(villain_pos, board_masks.0, board_masks.1);
+    let hero_range = &range_manager.get_range(oop, board_masks.0, board_masks.1).hands;
+    let villain_range = &range_manager.get_range(villain_pos, board_masks.0, board_masks.1).hands;
     
     let mut results_new = vec![0.0; hero_hands];
     

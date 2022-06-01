@@ -1,6 +1,7 @@
 use crate::range::*;
 use std::cmp::min;
 use rust_poker::constants::*;
+use rust_poker::hand_range::{get_card_mask};
 
 // discount CFR params
 const ALPHA: f64 = 1.5;
@@ -127,7 +128,7 @@ pub enum NodeType {
     ActionNode(ActionNodeInfo),
     TerminalNode(TerminalType),
     ChanceNode(u8),
-    ChanceNodeCard(Option<u8>),
+    ChanceNodeCard((u64, Option<u64>)),
 }
 
 #[derive(Debug)]
@@ -171,31 +172,41 @@ pub fn recursive_build(latest_action: Option<ActionType>, sizing_schemes: &Sizin
                 Some(_) => {
                     if current_board.len() == 6 {
                         // Flop, add new turn cards
-                        for card in range_manager.get_board_deck(current_board).iter() {
+                        let board_mask = get_card_mask(current_board);
+                        for card in range_manager.get_board_deck(board_mask).iter() {
                             let rank = RANK_TO_CHAR[usize::from(card >> 2)];
                             let suit = SUIT_TO_CHAR[usize::from(card & 3)];
                             let mut new_board = current_board.clone();
                             new_board.push(rank);
                             new_board.push(suit);
+                            let new_board_mask = get_card_mask(&new_board);
                             
                             let new_eff_stack = current_node.chance_start_stack - (current_node.pot_size - current_node.chance_start_pot)/2;
                             
-                            let mut node_new = Node { node_type: NodeType::ChanceNodeCard(Some(*card)), children: vec![], pot_size: current_node.pot_size, chance_start_stack: new_eff_stack, oop_invested: 0, ip_invested: 0, chance_start_pot: current_node.pot_size };
+                            let mut node_new = Node { node_type: NodeType::ChanceNodeCard((new_board_mask, None)), children: vec![], pot_size: current_node.pot_size, chance_start_stack: new_eff_stack, oop_invested: 0, ip_invested: 0, chance_start_pot: current_node.pot_size };
                             recursive_build(None, sizing_schemes, &mut node_new, range_manager, &new_board);
                             current_node.children.push(node_new);
                         }
                         
                     } else if current_board.len() == 8 {
-                        for card in range_manager.get_board_deck(current_board).iter() {
+                        let board_mask = get_card_mask(current_board);
+                        for card in range_manager.get_board_deck(board_mask).iter() {
                             let rank = RANK_TO_CHAR[usize::from(card >> 2)];
                             let suit = SUIT_TO_CHAR[usize::from(card & 3)];
                             let mut new_board = current_board.clone();
                             new_board.push(rank);
                             new_board.push(suit);
+                            let new_board_mask = get_card_mask(&new_board);
+                            
+                            let old_board_mask = if range_manager.initial_board.len() == 6 {
+                                Some(board_mask)
+                            } else {
+                                None
+                            };
                             
                             let new_eff_stack = current_node.chance_start_stack - (current_node.pot_size - current_node.chance_start_pot)/2;
                             
-                            let mut node_new = Node { node_type: NodeType::ChanceNodeCard(Some(*card)), children: vec![], pot_size: current_node.pot_size, chance_start_stack: new_eff_stack, oop_invested: 0, ip_invested: 0, chance_start_pot: current_node.pot_size };
+                            let mut node_new = Node { node_type: NodeType::ChanceNodeCard((new_board_mask, old_board_mask)), children: vec![], pot_size: current_node.pot_size, chance_start_stack: new_eff_stack, oop_invested: 0, ip_invested: 0, chance_start_pot: current_node.pot_size };
                             recursive_build(None, sizing_schemes, &mut node_new, range_manager, &new_board);
                             current_node.children.push(node_new);
                         }
@@ -204,7 +215,8 @@ pub fn recursive_build(latest_action: Option<ActionType>, sizing_schemes: &Sizin
                     }
                 },
                 None => {
-                        let mut node_new = Node { node_type: NodeType::ChanceNodeCard(None), children: vec![], pot_size: current_node.pot_size, chance_start_stack: current_node.chance_start_stack, oop_invested: 0, ip_invested: 0, chance_start_pot: current_node.chance_start_pot };
+                        let board_mask = get_card_mask(current_board);
+                        let mut node_new = Node { node_type: NodeType::ChanceNodeCard((board_mask, None)), children: vec![], pot_size: current_node.pot_size, chance_start_stack: current_node.chance_start_stack, oop_invested: 0, ip_invested: 0, chance_start_pot: current_node.chance_start_pot };
                         recursive_build(None, sizing_schemes, &mut node_new, range_manager, current_board);
                         current_node.children.push(node_new);
                 }
@@ -230,8 +242,17 @@ pub fn recursive_build(latest_action: Option<ActionType>, sizing_schemes: &Sizin
                     }
                 }
             }
+            
+            let board_mask = get_card_mask(current_board);
+            let old_board_mask = if range_manager.initial_board.len() == 6 && current_board.len() == 10 {
+                let turn_board = &current_board[0..8];
+                Some(get_card_mask(&turn_board))
+            } else {
+                None
+            };
+            
             actions_new.dedup();
-            let mut node_new = Node { node_type: NodeType::ActionNode(ActionNodeInfo::new(true, actions_new, range_manager.get_num_hands(true, current_board))), children: vec![], pot_size: current_node.pot_size, chance_start_stack: current_node.chance_start_stack, oop_invested: 0, ip_invested: 0, chance_start_pot: current_node.chance_start_pot };
+            let mut node_new = Node { node_type: NodeType::ActionNode(ActionNodeInfo::new(true, actions_new, range_manager.get_num_hands(true, board_mask, old_board_mask))), children: vec![], pot_size: current_node.pot_size, chance_start_stack: current_node.chance_start_stack, oop_invested: 0, ip_invested: 0, chance_start_pot: current_node.chance_start_pot };
             
             recursive_build(None, sizing_schemes, &mut node_new, range_manager, current_board);
             current_node.children.push(node_new);
@@ -258,7 +279,7 @@ pub fn recursive_build(latest_action: Option<ActionType>, sizing_schemes: &Sizin
                                 let node_type_new = if current_board.len() == 10 {
                                     NodeType::TerminalNode(TerminalType::TerminalShowdown)
                                 } else {
-                                    NodeType::ChanceNode((range_manager.get_board_deck(current_board).len() - 4).try_into().unwrap())
+                                    NodeType::ChanceNode((range_manager.get_board_deck(get_card_mask(current_board)).len() - 4).try_into().unwrap())
                                 };
                                 let mut node_new = Node { node_type: node_type_new, children: vec![], pot_size: eff_pot_size, chance_start_stack: current_node.chance_start_stack, oop_invested: 0, ip_invested: 0, chance_start_pot: current_node.chance_start_pot };
                                 recursive_build(Some(*action), sizing_schemes, &mut node_new, range_manager, current_board);
@@ -308,7 +329,15 @@ pub fn recursive_build(latest_action: Option<ActionType>, sizing_schemes: &Sizin
                                     current_node.ip_invested
                                 };
                                 
-                                let mut node_new = Node { node_type: NodeType::ActionNode(ActionNodeInfo::new(oop_new, actions_new, range_manager.get_num_hands(oop_new, current_board))), children: vec![], pot_size: pot_size_new, chance_start_stack: current_node.chance_start_stack, oop_invested: oop_invested_new, ip_invested: ip_invested_new, chance_start_pot: current_node.chance_start_pot };
+                                let board_mask = get_card_mask(current_board);
+                                let old_board_mask = if range_manager.initial_board.len() == 6 && current_board.len() == 10 {
+                                    let turn_board = &current_board[0..8];
+                                    Some(get_card_mask(&turn_board))
+                                } else {
+                                    None
+                                };
+                                
+                                let mut node_new = Node { node_type: NodeType::ActionNode(ActionNodeInfo::new(oop_new, actions_new, range_manager.get_num_hands(oop_new, board_mask, old_board_mask))), children: vec![], pot_size: pot_size_new, chance_start_stack: current_node.chance_start_stack, oop_invested: oop_invested_new, ip_invested: ip_invested_new, chance_start_pot: current_node.chance_start_pot };
                                 recursive_build(Some(*action), sizing_schemes, &mut node_new, range_manager, current_board);
                                 current_node.children.push(node_new);
                                 
@@ -327,7 +356,7 @@ pub fn recursive_build(latest_action: Option<ActionType>, sizing_schemes: &Sizin
                                 let node_type_new = if current_board.len() == 10 {
                                     NodeType::TerminalNode(TerminalType::TerminalShowdown)
                                 } else {
-                                    NodeType::ChanceNode((range_manager.get_board_deck(current_board).len() - 4).try_into().unwrap())
+                                    NodeType::ChanceNode((range_manager.get_board_deck(get_card_mask(current_board)).len() - 4).try_into().unwrap())
                                 };
                                 let mut node_new = Node { node_type: node_type_new, children: vec![], pot_size: current_node.pot_size, chance_start_stack: current_node.chance_start_stack, oop_invested: 0, ip_invested: 0, chance_start_pot: current_node.chance_start_pot };
                                 recursive_build(Some(*action), sizing_schemes, &mut node_new, range_manager, current_board);
@@ -352,7 +381,15 @@ pub fn recursive_build(latest_action: Option<ActionType>, sizing_schemes: &Sizin
                                     }
                                 }
                                 
-                                let mut node_new = Node { node_type: NodeType::ActionNode(ActionNodeInfo::new(true, actions_new, range_manager.get_num_hands(true, current_board))), children: vec![], pot_size: pot_size_new, chance_start_stack: current_node.chance_start_stack, oop_invested: 0, ip_invested: *sizing, chance_start_pot: current_node.chance_start_pot };
+                                let board_mask = get_card_mask(current_board);
+                                let old_board_mask = if range_manager.initial_board.len() == 6 && current_board.len() == 10 {
+                                    let turn_board = &current_board[0..8];
+                                    Some(get_card_mask(&turn_board))
+                                } else {
+                                    None
+                                };
+                                
+                                let mut node_new = Node { node_type: NodeType::ActionNode(ActionNodeInfo::new(true, actions_new, range_manager.get_num_hands(true, board_mask, old_board_mask))), children: vec![], pot_size: pot_size_new, chance_start_stack: current_node.chance_start_stack, oop_invested: 0, ip_invested: *sizing, chance_start_pot: current_node.chance_start_pot };
                                 recursive_build(Some(*action), sizing_schemes, &mut node_new, range_manager, current_board);
                                 current_node.children.push(node_new);
                             }
@@ -375,7 +412,7 @@ pub fn recursive_build(latest_action: Option<ActionType>, sizing_schemes: &Sizin
                                 let node_type_new = if current_board.len() == 10 {
                                     NodeType::TerminalNode(TerminalType::TerminalShowdown)
                                 } else {
-                                    NodeType::ChanceNode((range_manager.get_board_deck(current_board).len() - 4).try_into().unwrap())
+                                    NodeType::ChanceNode((range_manager.get_board_deck(get_card_mask(current_board)).len() - 4).try_into().unwrap())
                                 };
                                 let eff_pot_size = current_node.pot_size + (sizing - min(current_node.oop_invested, current_node.ip_invested));
                                 let mut node_new = Node { node_type: node_type_new, children: vec![], pot_size: eff_pot_size, chance_start_stack: current_node.chance_start_stack, oop_invested: 0, ip_invested: 0, chance_start_pot: current_node.chance_start_pot };
@@ -429,7 +466,15 @@ pub fn recursive_build(latest_action: Option<ActionType>, sizing_schemes: &Sizin
                                     current_node.ip_invested
                                 };
                                 
-                                let mut node_new = Node { node_type: NodeType::ActionNode(ActionNodeInfo::new(oop_new, actions_new, range_manager.get_num_hands(oop_new, current_board))), children: vec![], pot_size: pot_size_new, chance_start_stack: current_node.chance_start_stack, oop_invested: oop_invested_new, ip_invested: ip_invested_new, chance_start_pot: current_node.chance_start_pot };
+                                let board_mask = get_card_mask(current_board);
+                                let old_board_mask = if range_manager.initial_board.len() == 6 && current_board.len() == 10 {
+                                    let turn_board = &current_board[0..8];
+                                    Some(get_card_mask(&turn_board))
+                                } else {
+                                    None
+                                };
+                                
+                                let mut node_new = Node { node_type: NodeType::ActionNode(ActionNodeInfo::new(oop_new, actions_new, range_manager.get_num_hands(oop_new, board_mask, old_board_mask))), children: vec![], pot_size: pot_size_new, chance_start_stack: current_node.chance_start_stack, oop_invested: oop_invested_new, ip_invested: ip_invested_new, chance_start_pot: current_node.chance_start_pot };
                                 recursive_build(Some(*action), sizing_schemes, &mut node_new, range_manager, current_board);
                                 current_node.children.push(node_new);
                             },
@@ -463,7 +508,15 @@ pub fn recursive_build(latest_action: Option<ActionType>, sizing_schemes: &Sizin
                                     }
                                 }
                                 
-                                let mut node_new = Node { node_type: NodeType::ActionNode(ActionNodeInfo::new(false, actions_new, range_manager.get_num_hands(false, current_board))), children: vec![], pot_size: current_node.pot_size, chance_start_stack: current_node.chance_start_stack, oop_invested: 0, ip_invested: 0, chance_start_pot: current_node.chance_start_pot};
+                                let board_mask = get_card_mask(current_board);
+                                let old_board_mask = if range_manager.initial_board.len() == 6 && current_board.len() == 10 {
+                                    let turn_board = &current_board[0..8];
+                                    Some(get_card_mask(&turn_board))
+                                } else {
+                                    None
+                                };
+                                
+                                let mut node_new = Node { node_type: NodeType::ActionNode(ActionNodeInfo::new(false, actions_new, range_manager.get_num_hands(false, board_mask, old_board_mask))), children: vec![], pot_size: current_node.pot_size, chance_start_stack: current_node.chance_start_stack, oop_invested: 0, ip_invested: 0, chance_start_pot: current_node.chance_start_pot};
                                 recursive_build(Some(*action), sizing_schemes, &mut node_new, range_manager, current_board);
                                 current_node.children.push(node_new);
                             },
@@ -486,7 +539,15 @@ pub fn recursive_build(latest_action: Option<ActionType>, sizing_schemes: &Sizin
                                     }
                                 }
                                 
-                                let mut node_new = Node { node_type: NodeType::ActionNode(ActionNodeInfo::new(false, actions_new, range_manager.get_num_hands(false, current_board))), children: vec![], pot_size: pot_size_new, chance_start_stack: current_node.chance_start_stack, oop_invested: *sizing, ip_invested: 0, chance_start_pot: current_node.chance_start_pot };
+                                let board_mask = get_card_mask(current_board);
+                                let old_board_mask = if range_manager.initial_board.len() == 6 && current_board.len() == 10 {
+                                    let turn_board = &current_board[0..8];
+                                    Some(get_card_mask(&turn_board))
+                                } else {
+                                    None
+                                };
+                                
+                                let mut node_new = Node { node_type: NodeType::ActionNode(ActionNodeInfo::new(false, actions_new, range_manager.get_num_hands(false, board_mask, old_board_mask))), children: vec![], pot_size: pot_size_new, chance_start_stack: current_node.chance_start_stack, oop_invested: *sizing, ip_invested: 0, chance_start_pot: current_node.chance_start_pot };
                                 recursive_build(Some(*action), sizing_schemes, &mut node_new, range_manager, current_board);
                                 current_node.children.push(node_new);
                             },

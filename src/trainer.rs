@@ -3,6 +3,7 @@ use crate::range::*;
 use crate::cfr::*;
 use crate::best_response::*;
 use std::time::Instant;
+use rust_poker::hand_range::{get_card_mask};
 
 pub struct Trainer {
     range_manager: RangeManager,
@@ -57,8 +58,9 @@ impl Trainer {
 fn cfr_aux(pos: bool, root: &mut Node, n_iteration: u64, range_manager: &RangeManager) {
     let villain_pos = pos ^ true;
     let villain_reach_probs = range_manager.get_initial_reach_probs(villain_pos);
+    let board_mask = get_card_mask(&range_manager.initial_board);
     
     let mut results = vec![];
-    let mut cfr_start = CfrState::new(range_manager, &mut results, root, pos, &villain_reach_probs, &range_manager.initial_board, n_iteration);
+    let mut cfr_start = CfrState::new(range_manager, &mut results, root, pos, &villain_reach_probs, (board_mask, None), n_iteration);
     cfr_start.run();
 }

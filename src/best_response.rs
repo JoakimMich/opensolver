@@ -4,6 +4,7 @@ use crate::cfr::*;
 use crate::hand_range::*;
 use rust_poker::constants::RANK_TO_CHAR;
 use rust_poker::constants::SUIT_TO_CHAR;
+use rust_poker::hand_range::{get_card_mask};
 use rayon::prelude::*;
 
 pub struct BestResponse<'a> {
@@ -15,8 +16,9 @@ pub struct BestResponse<'a> {
 impl<'a> BestResponse<'a> {
     pub fn new(range_manager: &'a RangeManager) -> BestResponse<'a> {
         let board = &range_manager.initial_board;
-        let oop_hands = range_manager.get_num_hands(true, board);
-        let ip_hands = range_manager.get_num_hands(false, board);
+        let board_mask = get_card_mask(&board);
+        let oop_hands = range_manager.get_num_hands(true, board_mask, None);
+        let ip_hands = range_manager.get_num_hands(false, board_mask, None);
         let oop_relative_probs = vec![0.0; oop_hands];
         let ip_relative_probs = vec![0.0; ip_hands];
         BestResponse { range_manager, oop_relative_probs, ip_relative_probs }
@@ -27,9 +29,10 @@ impl<'a> BestResponse<'a> {
         
         let villain_pos = pos ^ true;
         let board = &self.range_manager.initial_board;
-        let hero_hands = self.range_manager.get_num_hands(pos, board);
-        let hero_range = &self.range_manager.get_range(pos, board).hands;
-        let villain_range = &self.range_manager.get_range(villain_pos, board).hands;
+        let board_mask = get_card_mask(&board);
+        let hero_hands = self.range_manager.get_num_hands(pos, board_mask, None);
+        let hero_range = &self.range_manager.get_range(pos, board_mask, None).hands;
+        let villain_range = &self.range_manager.get_range(villain_pos, board_mask, None).hands;
         
         let relative_probs = match pos {
             true => &self.oop_relative_probs,
@@ -38,7 +41,7 @@ impl<'a> BestResponse<'a> {
         let villain_reach_probs = self.range_manager.get_initial_reach_probs(villain_pos);
         
         let mut ev_results = vec![];
-        let mut new_br = BestResponseState::new(self.range_manager, &mut ev_results, root, pos, &villain_reach_probs, board);
+        let mut new_br = BestResponseState::new(self.range_manager, &mut ev_results, root, pos, &villain_reach_probs, (board_mask, None));
         new_br.run();
         
         for i in 0..hero_hands {
@@ -53,9 +56,10 @@ impl<'a> BestResponse<'a> {
     pub fn set_relative_probablities(&mut self, pos: bool) {
         let villain_pos = pos ^ true;
         let board = &self.range_manager.initial_board;
-        let hero_hands = self.range_manager.get_num_hands(pos, board);
-        let hero_range = &self.range_manager.get_range(pos, board).hands;
-        let villain_range = &self.range_manager.get_range(villain_pos, board).hands;
+        let board_mask = get_card_mask(&board);
+        let hero_hands = self.range_manager.get_num_hands(pos, board_mask, None);
+        let hero_range = &self.range_manager.get_range(pos, board_mask, None).hands;
+        let villain_range = &self.range_manager.get_range(villain_pos, board_mask, None).hands;
         
         let relative_probs = match pos {
             true => &mut self.oop_relative_probs,
@@ -125,52 +129,40 @@ struct BestResponseState<'a> {
     node: &'a Node,
     oop: bool,
     villain_reach_probs: &'a Vec<f64>,
-    board: &'a String,
+    board_masks: (u64, Option<u64>),
 }
 
-fn recursive_br(range_manager: &RangeManager, results: &mut Vec<f64>, child: &Node, oop: bool, villain_reach_probs: &Vec<f64>, board: &String) {
-    let mut new_br = BestResponseState::new(range_manager, results, child, oop, villain_reach_probs, board);
+fn recursive_br(range_manager: &RangeManager, results: &mut Vec<f64>, child: &Node, oop: bool, villain_reach_probs: &Vec<f64>, board_masks: (u64, Option<u64>)) {
+    let mut new_br = BestResponseState::new(range_manager, results, child, oop, villain_reach_probs, board_masks);
     new_br.run();
 }
 
 impl<'a> BestResponseState<'a> {
-    fn new(range_manager: &'a RangeManager, result: &'a mut Vec<f64>, node: &'a Node, oop: bool, villain_reach_probs: &'a Vec<f64>, board: &'a String ) -> BestResponseState<'a> {
-        BestResponseState { range_manager, result, node, oop, villain_reach_probs, board }
+    fn new(range_manager: &'a RangeManager, result: &'a mut Vec<f64>, node: &'a Node, oop: bool, villain_reach_probs: &'a Vec<f64>, board_masks: (u64, Option<u64>) ) -> BestResponseState<'a> {
+        BestResponseState { range_manager, result, node, oop, villain_reach_probs, board_masks }
     }
     
     pub fn run(&mut self) {       
         match self.node.node_type {
             NodeType::TerminalNode(terminal_type) => {
-                *self.result = get_payoffs(self.oop, self.range_manager, self.board, self.node, self.villain_reach_probs, &terminal_type);
+                *self.result = get_payoffs(self.oop, self.range_manager, self.board_masks, self.node, self.villain_reach_probs, &terminal_type);
             },
             NodeType::ChanceNode(deck_left) => { 
-                let hero_hands = self.range_manager.get_num_hands(self.oop, self.board);
+                let hero_hands = self.range_manager.get_num_hands(self.oop, self.board_masks.0, self.board_masks.1);
                 *self.result = vec![0.0; hero_hands];
                 let results: Vec<_> = self.node.children.par_iter()
                                                         .map(|val| {
-                                                            let next_card = match val.node_type {
-                                                                NodeType::ChanceNodeCard(card) => card,
-                                                                _ => panic!("panicando!"),
-                                                            };
-                                                            
-                                                            let next_board = match next_card {
-                                                                Some(card) => {
-                                                                    let rank = RANK_TO_CHAR[usize::from(card >> 2)];
-                                                                    let suit = SUIT_TO_CHAR[usize::from(card & 3)];
-                                                                    let mut new_board = self.board.clone();
-                                                                    new_board.push(rank);
-                                                                    new_board.push(suit);
-                                                                    new_board
-                                                                },
-                                                                _ => self.board.to_string(),
-                                                            };
+                                                            let new_masks = match val.node_type {
+                                                                    NodeType::ChanceNodeCard((new,old)) => (new,old),
+                                                                    _ => panic!("panicando!"),
+                                                                };
                                                             
                                                             let mut results = vec![0.0; hero_hands];
                                                             if deck_left == 0 {
-                                                                recursive_br(self.range_manager, &mut results, val, self.oop, self.villain_reach_probs, &next_board);
+                                                                recursive_br(self.range_manager, &mut results, val, self.oop, self.villain_reach_probs, new_masks);
                                                             } else {
-                                                                let new_villain_reach_prob = self.range_manager.get_villain_reach(self.oop, &next_board, self.villain_reach_probs);
-                                                                recursive_br(self.range_manager, &mut results, val, self.oop, &new_villain_reach_prob, &next_board);
+                                                                let new_villain_reach_prob = self.range_manager.get_villain_reach(self.oop, new_masks.0, new_masks.1, self.villain_reach_probs);
+                                                                recursive_br(self.range_manager, &mut results, val, self.oop, &new_villain_reach_prob, new_masks);
                                                             }
                                                             results
                                                         })
@@ -178,16 +170,11 @@ impl<'a> BestResponseState<'a> {
         
                 if deck_left != 0 {
                     for (count,child) in self.node.children.iter().enumerate() {
-                        let next_card_u8 = match child.node_type {
-                            NodeType::ChanceNodeCard(card) => card,
-                            _ => panic!("panicando"),
-                        }.unwrap();
-                        let rank = RANK_TO_CHAR[usize::from(next_card_u8 >> 2)];
-                        let suit = SUIT_TO_CHAR[usize::from(next_card_u8 & 3)];
-                        let mut new_board = self.board.clone();
-                        new_board.push(rank);
-                        new_board.push(suit);
-                        let reach_mapping = self.range_manager.get_reach_mapping(self.oop, &new_board);
+                        let new_masks = match child.node_type {
+                            NodeType::ChanceNodeCard((new,old)) => (new,old),
+                            _ => panic!("panicando!"),
+                        };
+                        let reach_mapping = self.range_manager.get_reach_mapping(self.oop, new_masks.0, new_masks.1);
                         
                         for (i, mapping) in reach_mapping.iter().enumerate() {
                             self.result[*mapping as usize] += results[count][i] * (1.0/deck_left as f64);
@@ -202,19 +189,19 @@ impl<'a> BestResponseState<'a> {
                 }
             }, 
             NodeType::ChanceNodeCard(_) => { 
-                let mut new_br = BestResponseState::new(self.range_manager, self.result,  &self.node.children[0], self.oop, self.villain_reach_probs, self.board);
+                let mut new_br = BestResponseState::new(self.range_manager, self.result,  &self.node.children[0], self.oop, self.villain_reach_probs, self.board_masks);
                 new_br.run();
             }, 
             NodeType::ActionNode(ref node_info) => {
                 let n_actions = node_info.actions_num;                
                 if node_info.oop == self.oop {
-                    let hero_hands = self.range_manager.get_num_hands(self.oop, self.board);
+                    let hero_hands = self.range_manager.get_num_hands(self.oop, self.board_masks.0, self.board_masks.1);
                     *self.result = vec![f64::MIN; hero_hands];
    
                     let results: Vec<_> = self.node.children.par_iter()
                                                             .map(|val| {
                                                                 let mut results = vec![0.0; hero_hands];
-                                                                recursive_br(self.range_manager, &mut results, val, self.oop, self.villain_reach_probs, self.board);
+                                                                recursive_br(self.range_manager, &mut results, val, self.oop, self.villain_reach_probs, self.board_masks);
                                                                 results
                                                             })
                                                             .collect();
@@ -231,8 +218,8 @@ impl<'a> BestResponseState<'a> {
                 } else {
                     let villain_pos = self.oop ^ true;
                     let average_strategy = node_info.get_average_strategy();
-                    let hero_hands = self.range_manager.get_num_hands(self.oop, self.board);
-                    let villain_hands = self.range_manager.get_num_hands(villain_pos, self.board);                    
+                    let hero_hands = self.range_manager.get_num_hands(self.oop, self.board_masks.0, self.board_masks.1);
+                    let villain_hands = self.range_manager.get_num_hands(villain_pos, self.board_masks.0, self.board_masks.1);                    
                     *self.result = vec![0.0; hero_hands];
        
                     let results: Vec<_> = self.node.children.par_iter()
@@ -246,7 +233,7 @@ impl<'a> BestResponseState<'a> {
                                                                     
                                                                     offset += n_actions;
                                                                 }
-                                                                recursive_br(self.range_manager, &mut results, val, self.oop, &new_villain_reach_prob, self.board);
+                                                                recursive_br(self.range_manager, &mut results, val, self.oop, &new_villain_reach_prob, self.board_masks);
                                                                 results
                                                             })
                                                             .collect();
