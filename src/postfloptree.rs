@@ -36,17 +36,19 @@ impl ActionNodeInfo {
     
     pub fn get_current_strategy(&self) -> Vec<f64> {
         let mut offset = 0;
-        let mut strategy = vec![0.0; self.hands_num * self.actions_num];
+        let mut strategy = self.regret_sum.clone();
+        strategy.iter_mut().for_each(|x| *x = x.max(0.0));
+
         for _ in 0..self.hands_num {
-            let hand_sum_regrets: f64 = self.regret_sum[offset..offset+self.actions_num].iter().map(|x| (*x).max(0.0)).collect::<Vec<f64>>().iter().sum();
+            let strategy_slice = &mut strategy[offset..offset+self.actions_num];
+            let hand_sum_regrets: f64 = strategy_slice.iter().sum();
             if hand_sum_regrets > 0.0 {
-                let pos_cum_regrets = &self.regret_sum[offset..offset+self.actions_num].iter().map(|x| (*x).max(0.0) / hand_sum_regrets).collect::<Vec<f64>>();
-                for (count, val) in pos_cum_regrets.iter().enumerate() {
-                    strategy[offset+count] = *val;
+                for val in strategy_slice.iter_mut() {
+                    *val /= hand_sum_regrets;
                 }
             } else {
-                for item in strategy.iter_mut().skip(offset).take(self.actions_num) {
-                    *item = 1.0/self.actions_num as f64;
+                for val in strategy_slice.iter_mut() {
+                    *val = 1.0/self.actions_num as f64;;
                 }
             }
     
