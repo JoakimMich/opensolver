@@ -143,7 +143,7 @@ impl HandRange {
                     if &SUIT_TO_CHAR[usize::from(c1 & 3)] == &to_suit_lower {
                         let new_suit = c1 & 3 + c1 & 3 - char_to_suit(*from_suit);
                         let rank = c1 >> 2;
-                        c1 = rank + new_suit;
+                        c1 = rank*4 + new_suit;
                     }
                     
                     if &SUIT_TO_CHAR[usize::from(c2 & 3)] == &to_suit_lower {
