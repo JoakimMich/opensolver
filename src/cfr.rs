@@ -29,7 +29,12 @@ impl<'a> CfrState<'a> {
                 *self.result = get_payoffs(self.oop, self.range_manager, self.board_masks, self.node, self.villain_reach_probs, &terminal_type);
             },
             NodeType::ChanceNode(deck_left) => {
-                let hero_hands = self.range_manager.get_num_hands(self.oop, self.board_masks.0, self.board_masks.1);
+                let hero_hands = if self.oop == true {
+                    self.node.oop_num_hands
+                } else {
+                    self.node.ip_num_hands
+                };
+
                 *self.result = vec![0.0; hero_hands];
                 
                 let results: Vec<_> = self.node.children.par_iter_mut()
@@ -78,7 +83,11 @@ impl<'a> CfrState<'a> {
                 let n_actions = node_info.actions_num;
                 
                 if node_info.oop == self.oop {
-                    let hero_hands = self.range_manager.get_num_hands(self.oop, self.board_masks.0, self.board_masks.1);
+                    let hero_hands = if self.oop == true {
+                        self.node.oop_num_hands
+                    } else {
+                        self.node.ip_num_hands
+                    };
 					if n_actions == 1 {
 						recursive_cfr(self.range_manager, self.result, &mut self.node.children[0], self.oop, self.villain_reach_probs, self.board_masks, self.n_iterations);
 					} else {
@@ -113,8 +122,16 @@ impl<'a> CfrState<'a> {
                     
                 } else {
                     let villain_pos = self.oop ^ true;
-                    let hero_hands = self.range_manager.get_num_hands(self.oop, self.board_masks.0, self.board_masks.1);
-                    let villain_hands = self.range_manager.get_num_hands(villain_pos, self.board_masks.0, self.board_masks.1);        
+                    let hero_hands = if self.oop == true {
+                        self.node.oop_num_hands
+                    } else {
+                        self.node.ip_num_hands
+                    };
+                    let villain_hands = if self.oop == true {
+                        self.node.ip_num_hands
+                    } else {
+                        self.node.oop_num_hands
+                    };
 					if n_actions == 1 {
 						recursive_cfr(self.range_manager, self.result, &mut self.node.children[0], self.oop, self.villain_reach_probs, self.board_masks, self.n_iterations);
 					} else {
@@ -156,8 +173,16 @@ impl<'a> CfrState<'a> {
 
 pub fn get_payoffs(oop: bool, range_manager: &RangeManager, board_masks: (u64, Option<u64>), node: &Node, villain_reach_probs: &[f64], terminal_type: &TerminalType) -> Vec<f64> {
     let villain_pos = oop ^ true;
-    let hero_hands = range_manager.get_num_hands(oop, board_masks.0, board_masks.1);
-    let villain_hands = range_manager.get_num_hands(villain_pos, board_masks.0, board_masks.1);
+    let hero_hands = if oop == true {
+        node.oop_num_hands
+    } else {
+        node.ip_num_hands
+    };
+    let villain_hands = if oop == true {
+        node.ip_num_hands
+    } else {
+        node.oop_num_hands
+    };
     let hero_range = &range_manager.get_range(oop, board_masks.0, board_masks.1).hands;
     let villain_range = &range_manager.get_range(villain_pos, board_masks.0, board_masks.1).hands;
     

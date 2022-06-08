@@ -148,7 +148,12 @@ impl<'a> BestResponseState<'a> {
                 *self.result = get_payoffs(self.oop, self.range_manager, self.board_masks, self.node, self.villain_reach_probs, &terminal_type);
             },
             NodeType::ChanceNode(deck_left) => { 
-                let hero_hands = self.range_manager.get_num_hands(self.oop, self.board_masks.0, self.board_masks.1);
+                let hero_hands = if self.oop == true {
+                    self.node.oop_num_hands
+                } else {
+                    self.node.ip_num_hands
+                };
+                
                 *self.result = vec![0.0; hero_hands];
                 let results: Vec<_> = self.node.children.par_iter()
                                                         .map(|val| {
@@ -195,7 +200,12 @@ impl<'a> BestResponseState<'a> {
             NodeType::ActionNode(ref node_info) => {
                 let n_actions = node_info.actions_num;                
                 if node_info.oop == self.oop {
-                    let hero_hands = self.range_manager.get_num_hands(self.oop, self.board_masks.0, self.board_masks.1);
+                    let hero_hands = if self.oop == true {
+                        self.node.oop_num_hands
+                    } else {
+                        self.node.ip_num_hands
+                    };
+                
                     *self.result = vec![f64::MIN; hero_hands];
    
                     let results: Vec<_> = self.node.children.par_iter()
@@ -218,8 +228,16 @@ impl<'a> BestResponseState<'a> {
                 } else {
                     let villain_pos = self.oop ^ true;
                     let average_strategy = node_info.get_average_strategy();
-                    let hero_hands = self.range_manager.get_num_hands(self.oop, self.board_masks.0, self.board_masks.1);
-                    let villain_hands = self.range_manager.get_num_hands(villain_pos, self.board_masks.0, self.board_masks.1);                    
+                    let hero_hands = if self.oop == true {
+                        self.node.oop_num_hands
+                    } else {
+                        self.node.ip_num_hands
+                    };
+                    let villain_hands = if self.oop == true {
+                        self.node.ip_num_hands
+                    } else {
+                        self.node.oop_num_hands
+                    };               
                     *self.result = vec![0.0; hero_hands];
        
                     let results: Vec<_> = self.node.children.par_iter()
