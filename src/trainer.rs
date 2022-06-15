@@ -11,12 +11,14 @@ pub struct Trainer {
 }
 
 impl Trainer {
-    pub fn new(mut range_manager: RangeManager, sizings: &SizingSchemes, eff_stack: u32, pot_size: u32) -> Self {
+    pub fn new(mut range_manager: RangeManager, lines: Vec<Vec<u32>>, eff_stack: u32, pot_size: u32) -> Self {
+        let sizing_mapping = get_sizings(lines);
         range_manager.initialize_ranges();
         let oop_num_hands = range_manager.get_num_hands(true, get_card_mask(&range_manager.initial_board), None);
         let ip_num_hands = range_manager.get_num_hands(true, get_card_mask(&range_manager.initial_board), None);
         let mut root = Node::new_root(eff_stack, pot_size, oop_num_hands, ip_num_hands);
-        recursive_build(None, sizings, &mut root, &range_manager, &range_manager.initial_board);
+        
+        recursive_build(None, &sizing_mapping, &"".to_string(), &mut root, &range_manager, &range_manager.initial_board);
         Trainer { range_manager, root }
     }
     
