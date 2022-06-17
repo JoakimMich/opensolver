@@ -119,7 +119,11 @@ impl RangeManager {
         let oop_reach_mapping = HashMap::new();
         let ip_reach_mapping = HashMap::new();
         let mut board_deck = HashMap::new();
-        let initial_board = normalize_flop(&initial_board);
+        let initial_board = if initial_board.len() == 6 {
+            normalize_flop(&initial_board)
+        } else {
+            initial_board
+        };
         
         if initial_board.len() != 6 {
             let board_mask = get_card_mask(&initial_board);
