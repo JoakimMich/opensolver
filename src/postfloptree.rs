@@ -1,8 +1,9 @@
 use crate::range::*;
 use std::cmp::min;
 use rust_poker::constants::*;
-use rust_poker::hand_range::{get_card_mask};
+use rust_poker::hand_range::{get_card_mask,mask_to_string};
 use std::collections::HashMap;
+use std::fmt;
 
 // discount CFR params
 const ALPHA: f64 = 1.5;
@@ -140,9 +141,603 @@ pub struct Node {
     pub ip_num_hands: usize,
 }
 
+#[derive(Debug)]
+pub struct NodeInfo {
+    pub line: String,
+    pub node_type: String,
+    pub board: String,
+    pub pot: (u32, u32, u32),
+    pub children_count: u32,
+    pub flags: Vec<String>,
+}
+
+impl fmt::Display for NodeInfo {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        writeln!(f, "{}",self.line)?;
+        writeln!(f, "{}",self.node_type)?;
+        writeln!(f, "{}",self.board)?;
+        writeln!(f, "{} {} {}",self.pot.0,self.pot.1,self.pot.2)?;
+        writeln!(f, "{} children",self.children_count)?;
+        writeln!(f, "flags: ")?;
+        for el in &self.flags {
+             write!(f, "{} ", el)?;
+        }
+        Ok(())
+    }
+}
+
+fn chunks(s: &str, length: usize) -> impl Iterator<Item=&str> {
+    assert!(length > 0);
+    let mut indices = s.char_indices().map(|(idx, _)| idx).peekable();
+    
+    std::iter::from_fn(move || {
+        let start_idx = match indices.next() {
+            Some(idx) => idx,
+            None => return None,
+        };
+        for _ in 0..length - 1 {
+            indices.next();
+        }
+        let end_idx = match indices.peek() {
+            Some(idx) => *idx,
+            None => s.bytes().len(),
+        };
+        Some(&s[start_idx..end_idx])
+    })
+}
+
 impl Node {
     pub fn new_root(chance_start_stack: u32, pot_size: u32, oop_num_hands: usize, ip_num_hands: usize) -> Node {
         Node { node_type: NodeType::ChanceNode(0), children: vec![] , pot_size, chance_start_stack, oop_invested: 0, ip_invested: 0, chance_start_pot: pot_size, oop_num_hands, ip_num_hands}
+    }
+    
+    // functions for UPI compatibility
+    
+    fn find_node(&self, line: &String, range_manager: &RangeManager) -> (String, &Node, u32, u32, u32, u32) {
+        let v = line.as_str().split(':').collect::<Vec<&str>>();
+        let mut current_board = range_manager.initial_board.clone();
+        
+        //todo: better error handling
+        if (v[0] != "r" || v.len() < 2 || v[1] != "0") && (line != "r"){
+            panic!("Invalid line input");
+        }
+        
+        let mut current_node = if line == "r" { 
+            &self.children[0]
+        } else {
+            &self.children[0].children[0]
+        };
+        
+        let mut oop_invested = 0;
+        let mut ip_invested = 0;
+        let mut previous_invested = 0;
+        let start_pot = current_node.pot_size;
+        
+        if v.len() > 2 {
+            let mut latest_action = "";
+            for action in &v[2..] {
+                if action.contains("b") {
+                    let mut sizing: u32 = action[1..].parse().unwrap();
+                    sizing -= previous_invested;
+                    let action_lookup = if latest_action.contains("b") {
+                        ActionType::Raise{sizing}
+                    } else {
+                        ActionType::Bet(sizing)
+                    };
+                    match &current_node.node_type {
+                        NodeType::ActionNode(node_info) => {
+                            let mut action_num = -1;
+                            
+                            for (i,action_node) in node_info.actions.iter().enumerate() {
+                                if *action_node == action_lookup {
+                                    current_node = &current_node.children[i as usize];
+                                    action_num = i as i64;
+                                }
+                            }
+                            
+                            if action_num == -1 {
+                                //todo: better error handling
+                                panic!("Couldn't find line");
+                            }
+                            
+                            if node_info.oop == true {
+                                oop_invested = sizing + previous_invested;
+                            } else {
+                                ip_invested = sizing + previous_invested;
+                            }
+                        },
+                        _ => panic!("Couldn't find root action node"),
+                    };
+                } else if action == &"c" {
+                    // check if call or check, by checking latest action
+                    let latest_sizing = if latest_action.contains("b") {
+                        let mut sizing: u32 = latest_action[1..].parse().unwrap();
+                        sizing -= previous_invested;
+                        sizing
+                    } else {
+                        0
+                    };
+                    let action_lookup = if latest_action.contains("b") {
+                        ActionType::Call
+                    } else {
+                        ActionType::Check
+                    };
+                    
+                    match &current_node.node_type {
+                        NodeType::ActionNode(node_info) => {
+                            let mut action_num = -1;
+                            
+                            for (i,action_node) in node_info.actions.iter().enumerate() {
+                                if *action_node == action_lookup {
+                                    current_node = &current_node.children[i as usize];
+                                    action_num = i as i64;
+                                }
+                            }
+                            
+                            if action_num == -1 {
+                                //todo: better error handling
+                                panic!("Couldn't find line");
+                            }
+                            
+                            if node_info.oop == true {
+                                oop_invested = latest_sizing + previous_invested;
+                            } else {
+                                ip_invested = latest_sizing + previous_invested;
+                            }
+                        },
+                        _ => panic!("Couldn't find root action node"),
+                    };
+                    previous_invested += latest_sizing;
+                } else {
+                    // todo: error handling for invalid input cards
+                    let mut new_board = current_board.clone();
+                    let rank = action.chars().next().unwrap();
+                    let suit = action.chars().nth(1).unwrap();
+                    new_board.push(rank);
+                    new_board.push(suit);
+                    let new_board_mask = get_card_mask(&new_board);
+                    let old_board_mask = if range_manager.initial_board.len() == 6 && current_board.len() == 8 {
+                        Some(get_card_mask(&current_board))
+                    } else {
+                        None
+                    };
+                    for (i, child) in current_node.children.iter().enumerate() {
+                        let child_id = match child.node_type {
+                            NodeType::ChanceNodeCard((new, old)) => {
+                                if new == new_board_mask && old == old_board_mask {
+                                    Some(i)
+                                } else {
+                                    None
+                                }
+                            },
+                            _ => None,
+                        };
+                        
+                        if let Some(x) = child_id {
+                            current_node = &current_node.children[x].children[0];
+                            break;
+                        }
+                    }
+                    current_board = new_board;
+                }
+                latest_action = action;
+            }
+        }
+        
+        (current_board, current_node, oop_invested, ip_invested, start_pot, previous_invested)
+    }
+    
+    pub fn get_line_freq(&self, line: String, range_manager: &RangeManager, hand_order_mapping: &HashMap<String, usize>) -> f64 {
+        let mut line_freqs = vec![0.0, 0.0];
+        for (i,&oop) in [false, true].iter().enumerate() {
+            let start_range = self.get_range(oop, "r".to_string(), range_manager, hand_order_mapping);
+            let final_range = self.get_range(oop, line.clone(), range_manager, hand_order_mapping);
+            let start_range_sum: f64 = start_range.iter().sum();
+            let mut line_freq = 0.0;
+            
+            for (j,weight) in final_range.iter().enumerate() {
+                if weight > &0.0 {
+                    let hand_freq = weight / start_range[j];
+                    line_freq += hand_freq * (start_range[j]/start_range_sum)
+                }
+            }
+            
+            line_freqs[i] = line_freq
+        }
+        line_freqs[0]*line_freqs[1]
+    }
+    
+    pub fn get_node(&self, line: String, range_manager: &RangeManager) -> NodeInfo {
+        let v: Vec<&str> = line.rsplitn(2, ':').collect();
+        if v.len() > 1 {
+            let child_info = self.get_children(v[1].to_string(), range_manager);
+            for child in child_info {
+                if child.line == line {
+                    return child;
+                }
+            }
+        } else {
+            let mut current_node = &self.children[0];
+            let mut oop_invested = 0;
+            let mut ip_invested = 0;
+            let start_pot = current_node.pot_size;
+            return NodeInfo { line: "r".to_string(), node_type: "ROOT".to_string(), board: range_manager.initial_board.clone(), pot: (oop_invested,ip_invested,start_pot), children_count: 1, flags: vec![] };
+        }
+        
+        panic!("Couldn't find line of node");
+    }
+    
+    pub fn get_children(&self, line: String, range_manager: &RangeManager) -> Vec<NodeInfo> {
+        let mut children_info_vec = vec![];
+        
+        let (current_board, current_node, mut oop_invested, mut ip_invested, mut start_pot, previous_invested) = self.find_node(&line, range_manager);
+        
+        match &current_node.node_type {
+            NodeType::ActionNode(node_info_current) => {
+                for (i,child) in current_node.children.iter().enumerate() {
+                    let child_info = match &child.node_type {
+                        NodeType::ActionNode(node_info_child) => {
+                            let mut new_line = line.clone();
+                            new_line.push(':');
+                            let next_action = match node_info_current.actions[i] {
+                                ActionType::Check => {
+                                    "c".to_string()
+                                },
+                                ActionType::Call => {
+                                    if oop_invested > ip_invested {
+                                        ip_invested = oop_invested;
+                                    } else {
+                                        oop_invested = ip_invested;
+                                    }
+                                    "c".to_string()
+                                },
+                                ActionType::Bet(sizing) => {
+                                    if node_info_current.oop == true {
+                                        oop_invested = child.oop_invested + previous_invested;
+                                    } else {
+                                        ip_invested = child.ip_invested + previous_invested;
+                                    };
+                                    format!("b{}",sizing+previous_invested)
+                                },
+                                ActionType::Raise{sizing} => {
+                                    if node_info_current.oop == true {
+                                        oop_invested = child.oop_invested + previous_invested;
+                                    } else {
+                                        ip_invested = child.ip_invested + previous_invested;
+                                    }
+                                    format!("b{}",sizing+previous_invested)
+                                },
+                                ActionType::Fold => {
+                                    "f".to_string()
+                                }
+                            };
+                            let node_type = if node_info_child.oop == true {
+                                "OOP_DEC".to_string()
+                            } else {
+                                "IP_DEC".to_string()
+                            };
+                            new_line.push_str(&next_action);
+                            let child_info = NodeInfo { line: new_line, node_type: node_type, board: current_board.clone(), pot: (oop_invested, ip_invested, start_pot), children_count: child.children.len() as u32, flags: vec![] };
+                            children_info_vec.push(child_info);
+                        },
+                        NodeType::TerminalNode(terminal_type) => {
+                            let mut new_line = line.clone();
+                            new_line.push(':');
+                            let next_action = match terminal_type {
+                                TerminalType::TerminalFold(_) => {
+                                    "f".to_string()
+                                },
+                                TerminalType::TerminalShowdown => {
+                                    if oop_invested > ip_invested {
+                                        ip_invested = oop_invested;
+                                    } else {
+                                        oop_invested = ip_invested;
+                                    }
+                                    "c".to_string()
+                                },
+                            };
+                            new_line.push_str(&next_action);
+                            let child_info = NodeInfo { line: new_line, node_type: "END_NODE".to_string(), board: current_board.clone(), pot: (oop_invested, ip_invested, start_pot), children_count: 0, flags: vec![] };
+                            children_info_vec.push(child_info);
+                        },
+                        NodeType::ChanceNode(children_count) => {
+                            if oop_invested > ip_invested {
+                                ip_invested = oop_invested;
+                            } else {
+                                oop_invested = ip_invested;
+                            }
+                            let mut new_line = line.clone();
+                            new_line.push(':');
+                            new_line.push('c');
+                            let child_info = NodeInfo { line: new_line, node_type: "SPLIT_NODE".to_string(), board: current_board.clone(), pot: (oop_invested, ip_invested, start_pot), children_count: *children_count as u32, flags: vec![] };
+                            children_info_vec.push(child_info);
+                        },
+                        _ => (),
+                    };
+                }
+            },
+            NodeType::ChanceNode(_) => {
+                let cards_old = chunks(&current_board, 2).collect::<Vec<&str>>();;
+                for child in &current_node.children {
+                    match child.node_type {
+                        NodeType::ChanceNodeCard((board_mask, _)) => {
+                            let new_board = mask_to_string(board_mask);
+                            let cards_new = chunks(&new_board, 2).collect::<Vec<&str>>();;
+                            let mut new_card = "";
+                            for card in cards_new {
+                                if cards_old.contains(&card) == false {
+                                    new_card = card;
+                                }
+                            }
+                            
+                            let mut new_board = current_board.clone();
+                            new_board.push_str(new_card);
+                            let mut new_line = line.clone();
+                            new_line.push(':');
+                            new_line.push_str(new_card);
+                            let child_info = NodeInfo { line: new_line, node_type: "OOP_DEC".to_string(), board: new_board, pot: (oop_invested, ip_invested, start_pot), children_count: child.children[0].children.len() as u32, flags: vec![] };
+                            children_info_vec.push(child_info);
+                        },
+                        _ => panic!("all children in chance node should be ChanceNodeCard"),
+                    };
+                }
+            },
+            NodeType::ChanceNodeCard(board_mask) => {
+                // root
+                let child_info = NodeInfo { line: "r:0".to_string(), node_type: "OOP_DEC".to_string(), board: current_board, pot: (oop_invested, ip_invested, start_pot), children_count: current_node.children[0].children.len() as u32, flags: vec![] };
+                children_info_vec.push(child_info);
+            },
+            _ => {
+                println!("do nuufing, shoudlnt even be reached here???");
+            },
+        };
+        
+        children_info_vec
+    }
+    
+    pub fn get_strategy(&self, line: String, range_manager: &RangeManager, hand_order_mapping: &HashMap<String, usize>) -> Vec<Vec<f64>> {
+        let (current_board, current_node, mut oop_invested, mut ip_invested, mut start_pot, previous_invested) = self.find_node(&line, range_manager);
+        
+        // todo: better error handling
+        match &current_node.node_type {
+            NodeType::ActionNode(node_info) => {
+                let mut final_strategy = vec![vec![0.0; hand_order_mapping.len()]; node_info.actions_num];
+                let new_board_mask = get_card_mask(&current_board);
+                let old_board_mask = if range_manager.initial_board.len() == 6 && current_board.len() == 10 {
+                    Some(get_card_mask(&current_board[0..8].to_string()))
+                } else {
+                    None
+                };
+                let player_range = &range_manager.get_range(node_info.oop, new_board_mask, old_board_mask).hands;
+                let mut player_range_mapping = HashMap::new();
+                for hand in player_range {
+                    let hand_idx_temp = hand_order_mapping.get(&hand.to_string());
+                    let hand_reversed = format!("{}{}", &hand.to_string()[2..], &hand.to_string()[0..2]);
+                    let hand_idx = match hand_idx_temp {
+                        Some(x) => x,
+                        None => {
+                            hand_order_mapping.get(&hand_reversed).unwrap()
+                        },
+                    };
+                    player_range_mapping.insert((hand.0, hand.1), hand_idx);
+                }
+                let average_strategy = node_info.get_average_strategy();
+                let mut counter = 0;
+                average_strategy.chunks(node_info.actions_num).for_each(|slice| {
+                    for (i, action_freq) in slice.iter().enumerate() {
+                        final_strategy[i][**player_range_mapping.get(&(player_range[counter].0, player_range[counter].1)).unwrap() as usize] = *action_freq;
+                    }
+                    counter += 1;
+                });
+                final_strategy
+            },
+            _ => panic!("incorrect path"),
+        }
+    }
+    
+    pub fn get_range(&self, oop: bool, line: String, range_manager: &RangeManager, hand_order_mapping: &HashMap<String, usize>) -> Vec<f64> {
+        let v = line.as_str().split(':').collect::<Vec<&str>>();
+        let mut final_range = vec![0.0; hand_order_mapping.len()];
+        let mut player_range_mapping = HashMap::new();
+        let mut current_board = range_manager.initial_board.clone();
+        let mut player_range = &range_manager.get_range(oop, get_card_mask(&range_manager.initial_board), None).hands;
+        
+        for hand in player_range {
+            let hand_idx_temp = hand_order_mapping.get(&hand.to_string());
+            let hand_reversed = format!("{}{}", &hand.to_string()[2..], &hand.to_string()[0..2]);
+            let hand_idx = match hand_idx_temp {
+                Some(x) => x,
+                None => {
+                    hand_order_mapping.get(&hand_reversed).unwrap()
+                },
+            };
+            final_range[*hand_idx as usize] = hand.2  as f64 / 100.0;
+            player_range_mapping.insert((hand.0, hand.1), hand_idx);
+        }
+        
+        if (v[0] != "r" || v.len() < 2 || v[1] != "0") && line != "r" {
+            panic!("Invalid line input");
+        }
+        
+        if v.len() > 2 {
+            let mut latest_action = "";
+            let mut previous_invested = 0;
+            let mut oop_invested = 0;
+            let mut ip_invested = 0;
+            let mut current_node = &self.children[0].children[0];
+            for action in &v[2..] {
+                if action.contains("b") {
+                    let mut sizing: u32 = action[1..].parse().unwrap();
+                    sizing -= previous_invested;
+                    let action_lookup = if latest_action.contains("b") {
+                        ActionType::Raise{sizing}
+                    } else {
+                        ActionType::Bet(sizing)
+                    };
+                    match &current_node.node_type {
+                        NodeType::ActionNode(node_info) => {
+                            let mut action_num = -1;
+                            
+                            for (i,action_node) in node_info.actions.iter().enumerate() {
+                                if *action_node == action_lookup {
+                                    current_node = &current_node.children[i as usize];
+                                    action_num = i as i64;
+                                }
+                            }
+                            
+                            if action_num == -1 {
+                                //todo: better error handling
+                                panic!("Couldn't find line");
+                            } else {
+                                if node_info.oop == oop {
+                                    let average_strategy = node_info.get_average_strategy();
+                                    let mut counter = 0;
+                                    average_strategy.chunks(node_info.actions_num).for_each(|slice| {
+                                        let action_freq = slice[action_num as usize];
+                                        final_range[**player_range_mapping.get(&(player_range[counter].0, player_range[counter].1)).unwrap() as usize] *= action_freq;
+                                        counter += 1;
+                                    });
+                                }
+                            }
+                            
+                            if node_info.oop == true {
+                                oop_invested = sizing + previous_invested;
+                            } else {
+                                ip_invested = sizing + previous_invested;
+                            }
+                        },
+                        _ => panic!("Couldn't find root action node"),
+                    };
+                } else if action == &"c" {
+                    // check if call or check, by checking latest action
+                    let latest_sizing = if latest_action.contains("b") {
+                        let mut sizing: u32 = latest_action[1..].parse().unwrap();
+                        sizing -= previous_invested;
+                        sizing
+                    } else {
+                        0
+                    };
+                    let action_lookup = if latest_action.contains("b") {
+                        ActionType::Call
+                    } else {
+                        ActionType::Check
+                    };
+                    
+                    match &current_node.node_type {
+                        NodeType::ActionNode(node_info) => {
+                            let mut action_num = -1;
+                            
+                            for (i,action_node) in node_info.actions.iter().enumerate() {
+                                if *action_node == action_lookup {
+                                    current_node = &current_node.children[i as usize];
+                                    action_num = i as i64;
+                                }
+                            }
+                            
+                            if action_num == -1 {
+                                //todo: better error handling
+                                panic!("Couldn't find line");
+                            } else {
+                                if node_info.oop == oop {
+                                    let average_strategy = node_info.get_average_strategy();
+                                    let mut counter = 0;
+                                    average_strategy.chunks(node_info.actions_num).for_each(|slice| {
+                                        let action_freq = slice[action_num as usize];
+                                        final_range[**player_range_mapping.get(&(player_range[counter].0, player_range[counter].1)).unwrap() as usize] *= action_freq;
+                                        counter += 1;
+                                    });
+                                }
+                            }
+                            
+                            if node_info.oop == true {
+                                oop_invested = latest_sizing + previous_invested;
+                            } else {
+                                ip_invested = latest_sizing + previous_invested;
+                            }
+                        },
+                        _ => panic!("Couldn't find root action node"),
+                    };
+                    previous_invested += latest_sizing;
+                } else if action == &"f" {
+                    let action_lookup = ActionType::Fold;
+                    match &current_node.node_type {
+                        NodeType::ActionNode(node_info) => {
+                            let mut action_num = -1;
+                            
+                            for (i,action_node) in node_info.actions.iter().enumerate() {
+                                if *action_node == action_lookup {
+                                    current_node = &current_node.children[i as usize];
+                                    action_num = i as i64;
+                                }
+                            }
+                            
+                            if action_num == -1 {
+                                //todo: better error handling
+                                panic!("Couldn't find line");
+                            } else {
+                                if node_info.oop == oop {
+                                    let average_strategy = node_info.get_average_strategy();
+                                    let mut counter = 0;
+                                    average_strategy.chunks(node_info.actions_num).for_each(|slice| {
+                                        let action_freq = slice[action_num as usize];
+                                        final_range[**player_range_mapping.get(&(player_range[counter].0, player_range[counter].1)).unwrap() as usize] *= action_freq;
+                                        counter += 1;
+                                    });
+                                }
+                            }
+                        },
+                        _ => panic!("Couldn't find root action node"),
+                    };
+                } else {
+                    // todo: error handling for invalid input cards
+                    let mut new_board = current_board.clone();
+                    let rank = action.chars().next().unwrap();
+                    let suit = action.chars().nth(1).unwrap();
+                    new_board.push(rank);
+                    new_board.push(suit);
+                    let new_board_mask = get_card_mask(&new_board);
+                    let old_board_mask = if range_manager.initial_board.len() == 6 && current_board.len() == 8 {
+                        Some(get_card_mask(&current_board))
+                    } else {
+                        None
+                    };
+                    for (i, child) in current_node.children.iter().enumerate() {
+                        let child_id = match child.node_type {
+                            NodeType::ChanceNodeCard((new, old)) => {
+                                if new == new_board_mask && old == old_board_mask {
+                                    Some(i)
+                                } else {
+                                    None
+                                }
+                            },
+                            _ => None,
+                        };
+                        
+                        if let Some(x) = child_id {
+                            current_node = &current_node.children[x].children[0];
+                            break;
+                        }
+                    }
+                    player_range = &range_manager.get_range(oop, new_board_mask, old_board_mask).hands;
+                    for hand in player_range {
+                        //todo: remove hands from final_range which are not impossible due to blockers?
+                        let hand_idx_temp = hand_order_mapping.get(&hand.to_string());
+                        let hand_reversed = format!("{}{}", &hand.to_string()[2..], &hand.to_string()[0..2]);
+                        let hand_idx = match hand_idx_temp {
+                            Some(x) => x,
+                            None => {
+                                hand_order_mapping.get(&hand_reversed).unwrap()
+                            },
+                        };
+                        player_range_mapping.insert((hand.0, hand.1), hand_idx);
+                    }
+                    current_board = new_board;
+                }
+                latest_action = action;
+            }
+        }
+        
+        final_range
     }
 }
 

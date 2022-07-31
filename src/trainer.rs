@@ -4,10 +4,22 @@ use crate::cfr::*;
 use crate::best_response::*;
 use std::time::Instant;
 use rust_poker::hand_range::{get_card_mask};
+use std::collections::HashMap;
 
 pub struct Trainer {
-    range_manager: RangeManager,
-    root: Node,
+    pub range_manager: RangeManager,
+    pub root: Node,
+}
+
+pub enum Accuracy {
+    Chips(f64),
+    Fraction(f64),
+}
+
+pub enum TrainFinish {
+    Seconds(u64),
+    Iterations(u64),
+    Indefinite,
 }
 
 impl Trainer {
@@ -19,44 +31,55 @@ impl Trainer {
         let mut root = Node::new_root(eff_stack, pot_size, oop_num_hands, ip_num_hands);
         
         recursive_build(None, &sizing_mapping, &"".to_string(), &mut root, &range_manager, &range_manager.initial_board);
+        
         Trainer { range_manager, root }
     }
     
     
     
-    pub fn train(&mut self, exploitability_goal: f64) {
-        let n_iterations = 5000;
+    pub fn train(&mut self, accuracy: &Accuracy, train_finish: TrainFinish) {
         let mut best_response = BestResponse::new(&self.range_manager);
         best_response.set_relative_probablities(true);
         best_response.set_relative_probablities(false);
         let now = Instant::now();
-        for i in 0..n_iterations {
+        let mut i = 0;
+        let exploitability_goal = match accuracy {
+            Accuracy::Chips(val) => *val,
+            Accuracy::Fraction(val) => {
+                val * (self.root.pot_size as f64) / 100.0
+            },
+        };
+        let mut time_elapsed = now.elapsed().as_secs_f64();
+        loop {
+            time_elapsed = now.elapsed().as_secs_f64();
+            match train_finish {
+                TrainFinish::Seconds(val) => {
+                    if time_elapsed as u64 >= val {
+                        best_response.print_exploitability(&self.root, time_elapsed);
+                        break;
+                    }
+                },
+                TrainFinish::Iterations(val) => {
+                    if i >= val {
+                        best_response.print_exploitability(&self.root, time_elapsed);
+                        break;
+                    }
+                },
+                TrainFinish::Indefinite => (),
+            };
+            
             cfr_aux(true, &mut self.root, i, &self.range_manager);
             cfr_aux(false, &mut self.root, i, &self.range_manager);
             if i % 25 == 0 {
-                println!("Iteration {}",i);
-                let exploitability = best_response.print_exploitability(&self.root);
+                let exploitability = best_response.print_exploitability(&self.root, time_elapsed);
                 if exploitability <= exploitability_goal {
                     break;
                 }
             }
+            i += 1;
         }
-        
-        println!("Elapsed: {} seconds", now.elapsed().as_secs_f64());
-        
-        //match self.root.children[0].node_type {
-        //    NodeType::ActionNode(ref mut node_info) => {
-        //        //println!("{:?} {:?}",node_info.get_average_strategy(), node_info.actions);
-        //    },
-        //    _ => println!("hmm.."),
-        //};
-        
-        //match self.root.children[0].children[1].node_type {
-        //    NodeType::ActionNode(ref mut node_info) => {
-        //        //println!("{:?} {:?}",node_info.get_average_strategy(), node_info.actions);
-        //    },
-        //    _ => println!("hmm.."),
-        //};
+
+        //println!("Elapsed: {} seconds", time_elapsed);
     }
 }
 

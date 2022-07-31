@@ -2,6 +2,7 @@ use crate::postfloptree::*;
 use crate::range::*;
 use crate::hand_range::*;
 use crate::trainer::*;
+use crate::upi::*;
 
 mod postfloptree;
 mod range;
@@ -10,6 +11,7 @@ mod hand_range;
 mod best_response;
 mod trainer;
 mod isomorphism;
+mod upi;
 
 use rust_poker::hand_range::{get_card_mask};
 
@@ -18,14 +20,15 @@ use rust_poker::hand_range::{get_card_mask};
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 fn main() {
-    test_flop();
+    let mut cli_session = CliSession::new();
+    cli_session.start();
 }
 
 
 fn test_flop() {
-    let oop_range = HandRange::from_string("QQ+".to_string());
-    let ip_range = HandRange::from_string("QQ+".to_string());
-    let tree_board = "QsJh2h".to_string();
+    let oop_range = HandRange::from_string("AA,QQ".to_string());
+    let ip_range = HandRange::from_string("KcKd".to_string());
+    let tree_board = "2c2d2s".to_string();
     let mut range_manager = RangeManager::new(oop_range, ip_range, tree_board);
     let lines_pioconfig = vec![vec![0, 0, 0, 0, 0, 126, 320, 910],
                     vec![0, 0, 0, 0, 126, 320, 910],
@@ -120,6 +123,6 @@ fn test_flop() {
     ];
     
         
-    let mut trainer = Trainer::new(range_manager, lines_100, 910, 180);
-    trainer.train(0.5);
+    let mut trainer = Trainer::new(range_manager, lines_pioconfig, 910, 180);
+    //trainer.train(Accuracy::Fraction(0.0), TrainFinish::Iterations(5000));
 }

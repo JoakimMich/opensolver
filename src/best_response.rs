@@ -88,16 +88,17 @@ impl<'a> BestResponse<'a> {
         
     }
     
-    pub fn print_exploitability(&mut self, root: &Node) -> f64 {
+    pub fn print_exploitability(&mut self, root: &Node, time_elapsed: f64) -> f64 {
         let oop_ev = self.get_best_response_ev(true, root);
         let ip_ev = self.get_best_response_ev(false, root);
         
-        let exploitability = (oop_ev/2.0 + ip_ev/2.0) / 2.0 / (root.pot_size as f64) * 100.0;
-        
-        println!("OOP Best Response EV: {}", oop_ev/2.0 + (root.pot_size as f64 / 2.0) );
-        println!("IP Best Response EV: {}", ip_ev/2.0 + (root.pot_size as f64 / 2.0));
-        println!("Exploitability: {}% \n", exploitability);
-        
+        let exploitability = (oop_ev/2.0 + ip_ev/2.0) / 2.0;
+        println!("SOLVER:");
+        println!("running time: {}", time_elapsed);
+        println!("OOP's MES: {}", oop_ev/2.0 + (root.pot_size as f64 / 2.0) );
+        println!("IP's MES: {}", ip_ev/2.0 + (root.pot_size as f64 / 2.0));
+        println!("Exploitable for: {} ({}%)", exploitability, exploitability / (root.pot_size as f64) * 100.0);
+        println!("END \n");
         exploitability
     }
 }

@@ -26,6 +26,10 @@ fn flop_type(board: &String) -> FlopType {
 }
 
 pub fn normalize_flop(board: &String) -> String {
+    let iso_flag = 0;
+    if iso_flag == 0 {
+        return board.to_string();
+    }
     let mut suits_count: HashMap<char,i64> = HashMap::new();
     
     for i in (0..board.len()).step_by(2) {
@@ -51,6 +55,16 @@ pub fn normalize_flop(board: &String) -> String {
 }
 
 pub fn isomorphism_mapping(board: &String) -> HashMap<char, char>{
+    let iso_flag = 0;
+    if iso_flag == 0 {
+        let mut iso_mapping = HashMap::new();
+        let suits = vec!['h','d','s','c'];
+        for s in &suits {
+            iso_mapping.insert(*s, *s);
+        }
+        
+        return iso_mapping
+    }
     let mut suits_count: HashMap<char,i64> = HashMap::new();
     
     for i in (0..board.len()).step_by(2) {

@@ -282,7 +282,11 @@ impl RangeManager {
             } 
             
             // Rivers when solved from flop or turn 
-            let turn_range = &oop_hashmap.get(&(key.0, key.1)).unwrap().hands;
+            let turn_range = if self.initial_board.len() == 8 {
+				&oop_hashmap.get(&(get_card_mask(&self.initial_board), None)).unwrap().hands
+			} else {
+				&oop_hashmap.get(&(key.1.unwrap(), None)).unwrap().hands
+			};
 
             
             let mut j = 0;
@@ -348,7 +352,11 @@ impl RangeManager {
             } 
             
             // Rivers when solved from flop or turn 
-            let turn_range = &ip_hashmap.get(&(key.0, key.1)).unwrap().hands;
+            let turn_range = if self.initial_board.len() == 8 {
+				&ip_hashmap.get(&(get_card_mask(&self.initial_board), None)).unwrap().hands
+			} else {
+				&ip_hashmap.get(&(key.1.unwrap(), None)).unwrap().hands
+			};
             
             let mut j = 0;
             let mut reach_probs = vec![0; value.hands.len()];
