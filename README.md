@@ -18,4 +18,5 @@ Compared to commercial solvers, it is about 2x slower for rainbow flops (three d
 
 ## Resources
 [1] DCFR algorithm: https://arxiv.org/pdf/1809.04040.pdf
+
 [2] c++ Poker Solver: https://github.com/Fossana/cplusplus-cfr-poker-solver Current rust code base was heavily based on this code
