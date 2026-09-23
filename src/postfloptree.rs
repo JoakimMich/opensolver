@@ -89,6 +89,27 @@ impl ActionNodeInfo {
         }
     }
 
+    /// Average strategy in f32, action-major ([action][hand])
+    pub fn get_average_strategy_by_action(&self) -> Vec<f32> {
+        let hands = self.hands_num;
+        let mut totals = vec![0.0f32; hands];
+        for sums in self.strategy_sum.chunks_exact(hands) {
+            for (total, &sum) in totals.iter_mut().zip(sums) {
+                *total += sum;
+            }
+        }
+
+        let uniform = 1.0/self.actions_num as f32;
+        let mut average_strategy = self.strategy_sum.clone();
+        for probs in average_strategy.chunks_exact_mut(hands) {
+            for (prob, &total) in probs.iter_mut().zip(&totals) {
+                *prob = if total > 0.0 { *prob / total } else { uniform };
+            }
+        }
+
+        average_strategy
+    }
+
     /// Average strategy, hand-major ([hand][action])
     pub fn get_average_strategy(&self) -> Vec<f64> {
         let hands = self.hands_num;
@@ -128,8 +149,6 @@ pub struct Node {
     pub oop_invested: u32,
     pub ip_invested: u32,
     pub chance_start_pot: u32,
-    pub oop_num_hands: usize,
-    pub ip_num_hands: usize,
 }
 
 #[derive(Debug)]
@@ -193,12 +212,12 @@ struct LineState<'a> {
 }
 
 impl Node {
-    pub fn new_root(chance_start_stack: u32, pot_size: u32, oop_num_hands: usize, ip_num_hands: usize) -> Node {
-        Node { node_type: NodeType::ChanceNode(0), children: vec![] , pot_size, chance_start_stack, oop_invested: 0, ip_invested: 0, chance_start_pot: pot_size, oop_num_hands, ip_num_hands}
+    pub fn new_root(chance_start_stack: u32, pot_size: u32) -> Node {
+        Node { node_type: NodeType::ChanceNode(0), children: vec![] , pot_size, chance_start_stack, oop_invested: 0, ip_invested: 0, chance_start_pot: pot_size }
     }
 
-    /// A node on the same street as `self`, holding the ranges for `range_key`
-    fn new_child(&self, node_type: NodeType, pot_size: u32, oop_invested: u32, ip_invested: u32, range_manager: &RangeManager, range_key: RangeKey) -> Node {
+    /// A node on the same street as `self`
+    fn new_child(&self, node_type: NodeType, pot_size: u32, oop_invested: u32, ip_invested: u32) -> Node {
         Node {
             node_type,
             children: vec![],
@@ -207,8 +226,6 @@ impl Node {
             oop_invested,
             ip_invested,
             chance_start_pot: self.chance_start_pot,
-            oop_num_hands: range_manager.get_num_hands(true, range_key.0, range_key.1),
-            ip_num_hands: range_manager.get_num_hands(false, range_key.0, range_key.1),
         }
     }
 
@@ -514,7 +531,7 @@ fn street_end(range_manager: &RangeManager, board: &str) -> NodeType {
 pub fn build_tree(root: &mut Node, sizing_mapping: &HashMap<String, Vec<ActionType>>, range_manager: &RangeManager) {
     let board = &range_manager.initial_board;
     let key = range_key(range_manager, board);
-    let mut card_node = root.new_child(NodeType::ChanceNodeCard(key), root.pot_size, 0, 0, range_manager, key);
+    let mut card_node = root.new_child(NodeType::ChanceNodeCard(key), root.pot_size, 0, 0);
     recursive_build(sizing_mapping, "r", &mut card_node, range_manager, board);
     root.children.push(card_node);
 }
@@ -539,8 +556,6 @@ fn recursive_build(sizing_mapping: &HashMap<String, Vec<ActionType>>, action_lin
                     oop_invested: 0,
                     ip_invested: 0,
                     chance_start_pot: current_node.pot_size,
-                    oop_num_hands: range_manager.get_num_hands(true, key.0, key.1),
-                    ip_num_hands: range_manager.get_num_hands(false, key.0, key.1),
                 };
                 recursive_build(sizing_mapping, action_line, &mut card_node, range_manager, &new_board);
                 current_node.children.push(card_node);
@@ -551,7 +566,7 @@ fn recursive_build(sizing_mapping: &HashMap<String, Vec<ActionType>>, action_lin
             let key = range_key(range_manager, current_board);
             let actions = with_sizings(vec![ActionType::Check], sizing_mapping, action_line);
             let node_info = ActionNodeInfo::new(true, actions, range_manager.get_num_hands(true, key.0, key.1));
-            let mut child = current_node.new_child(NodeType::ActionNode(node_info), current_node.pot_size, 0, 0, range_manager, key);
+            let mut child = current_node.new_child(NodeType::ActionNode(node_info), current_node.pot_size, 0, 0);
             recursive_build(sizing_mapping, action_line, &mut child, range_manager, current_board);
             current_node.children.push(child);
         },
@@ -600,7 +615,7 @@ fn recursive_build(sizing_mapping: &HashMap<String, Vec<ActionType>>, action_lin
                     },
                 };
 
-                let mut child = current_node.new_child(node_type, pot_size, oop_invested, ip_invested, range_manager, key);
+                let mut child = current_node.new_child(node_type, pot_size, oop_invested, ip_invested);
                 recursive_build(sizing_mapping, &child_line, &mut child, range_manager, current_board);
                 children.push(child);
             }
@@ -643,7 +658,7 @@ mod tests {
     fn ip_uses_own_sizes_after_check() {
         let mut range_manager = RangeManager::new(HandRange::from_string("AA".to_string()), HandRange::from_string("KK".to_string()), "2c7d9sTh3h".to_string());
         range_manager.initialize_ranges();
-        let mut root = Node::new_root(300, 100, 6, 6);
+        let mut root = Node::new_root(300, 100);
         build_tree(&mut root, &get_sizings(vec![vec![0, 0], vec![30, 30], vec![0, 70, 70]]), &range_manager);
 
         let oop_node = &root.children[0].children[0];

@@ -26,9 +26,7 @@ impl Trainer {
     pub fn new(mut range_manager: RangeManager, lines: Vec<Vec<u32>>, eff_stack: u32, pot_size: u32) -> Self {
         let sizing_mapping = get_sizings(lines);
         range_manager.initialize_ranges();
-        let oop_num_hands = range_manager.get_num_hands(true, get_card_mask(&range_manager.initial_board), None);
-        let ip_num_hands = range_manager.get_num_hands(false, get_card_mask(&range_manager.initial_board), None);
-        let mut root = Node::new_root(eff_stack, pot_size, oop_num_hands, ip_num_hands);
+        let mut root = Node::new_root(eff_stack, pot_size);
         
         build_tree(&mut root, &sizing_mapping, &range_manager);
         

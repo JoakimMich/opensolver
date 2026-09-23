@@ -1,9 +1,7 @@
 use crate::range::*;
 use crate::postfloptree::*;
-use crate::cfr::*;
+use crate::cfr::{showdown_payoffs, fold_payoffs};
 use crate::hand_range::*;
-use crate::cards::RANK_TO_CHAR;
-use crate::cards::SUIT_TO_CHAR;
 use crate::cards::get_card_mask;
 use rayon::prelude::*;
 
@@ -25,34 +23,28 @@ impl<'a> BestResponse<'a> {
     }
     
     pub fn get_best_response_ev(&mut self, pos: bool, root: &Node) -> f64 {
-        let mut total_ev = 0.0;
-        
-        let villain_pos = pos ^ true;
-        let board = &self.range_manager.initial_board;
-        let board_mask = get_card_mask(&board);
-        let hero_hands = self.range_manager.get_num_hands(pos, board_mask, None);
+        let board_mask = get_card_mask(&self.range_manager.initial_board);
         let hero_range = &self.range_manager.get_range(pos, board_mask, None).hands;
-        let villain_range = &self.range_manager.get_range(villain_pos, board_mask, None).hands;
-        
+        let villain_range = &self.range_manager.get_range(!pos, board_mask, None).hands;
+
         let relative_probs = match pos {
             true => &self.oop_relative_probs,
             false => &self.ip_relative_probs,
         };
-        let villain_reach_probs = self.range_manager.get_initial_reach_probs(villain_pos);
-        
-        let mut ev_results = vec![];
-        let mut new_br = BestResponseState::new(self.range_manager, &mut ev_results, root, pos, &villain_reach_probs, (board_mask, None));
-        new_br.run();
-        
-        for i in 0..hero_hands {
-            total_ev += ev_results[i] / get_unblocked_count(hero_range[i], villain_range) * relative_probs[i];
+        let villain_reach_probs: Vec<f32> = self.range_manager.get_initial_reach_probs(!pos).iter().map(|&x| x as f32).collect();
+
+        let ctx = Ctx { range_manager: self.range_manager, oop: pos };
+        let mut ev_results = vec![0.0f32; hero_range.len()];
+        best_response(&ctx, &mut ev_results, root, &villain_reach_probs, hero_range, villain_range);
+
+        let mut total_ev = 0.0;
+        for (i, &ev) in ev_results.iter().enumerate() {
+            total_ev += ev as f64 / get_unblocked_count(hero_range[i], villain_range) * relative_probs[i];
         }
-        
+
         total_ev
     }
-    
-    
-    
+
     pub fn set_relative_probablities(&mut self, pos: bool) {
         let villain_pos = pos ^ true;
         let board = &self.range_manager.initial_board;
@@ -124,148 +116,112 @@ fn overlap_combos(hero_combo: Combo, villain_combo: Combo) -> bool {
     false
 }
 
-struct BestResponseState<'a> {
+/// Values that stay fixed during a best response pass
+struct Ctx<'a> {
     range_manager: &'a RangeManager,
-    result: &'a mut Vec<f64>,
-    node: &'a Node,
     oop: bool,
-    villain_reach_probs: &'a Vec<f64>,
-    board_masks: (u64, Option<u64>),
 }
 
-fn recursive_br(range_manager: &RangeManager, results: &mut Vec<f64>, child: &Node, oop: bool, villain_reach_probs: &Vec<f64>, board_masks: (u64, Option<u64>)) {
-    let mut new_br = BestResponseState::new(range_manager, results, child, oop, villain_reach_probs, board_masks);
-    new_br.run();
-}
-
-impl<'a> BestResponseState<'a> {
-    fn new(range_manager: &'a RangeManager, result: &'a mut Vec<f64>, node: &'a Node, oop: bool, villain_reach_probs: &'a Vec<f64>, board_masks: (u64, Option<u64>) ) -> BestResponseState<'a> {
-        BestResponseState { range_manager, result, node, oop, villain_reach_probs, board_masks }
+impl<'a> Ctx<'a> {
+    /// (hero range, villain range) on a board
+    #[inline]
+    fn ranges(&self, board_masks: (u64, Option<u64>)) -> (&'a [Combo], &'a [Combo]) {
+        let range_manager = self.range_manager;
+        (
+            &range_manager.get_range(self.oop, board_masks.0, board_masks.1).hands,
+            &range_manager.get_range(!self.oop, board_masks.0, board_masks.1).hands,
+        )
     }
-    
-    pub fn run(&mut self) {       
-        match self.node.node_type {
-            NodeType::TerminalNode(terminal_type) => {
-                *self.result = get_payoffs(self.oop, self.range_manager, self.board_masks, self.node, self.villain_reach_probs, &terminal_type);
-            },
-            NodeType::ChanceNode(deck_left) => { 
-                let hero_hands = if self.oop == true {
-                    self.node.oop_num_hands
-                } else {
-                    self.node.ip_num_hands
-                };
-                
-                *self.result = vec![0.0; hero_hands];
-                let results: Vec<_> = self.node.children.par_iter()
-                                                        .map(|val| {
-                                                            let new_masks = match val.node_type {
-                                                                    NodeType::ChanceNodeCard((new,old)) => (new,old),
-                                                                    _ => panic!("panicando!"),
-                                                                };
-                                                            
-                                                            let mut results = vec![0.0; hero_hands];
-                                                            if deck_left == 0 {
-                                                                recursive_br(self.range_manager, &mut results, val, self.oop, self.villain_reach_probs, new_masks);
-                                                            } else {
-                                                                let new_villain_reach_prob = self.range_manager.get_villain_reach(self.oop, new_masks.0, new_masks.1, self.villain_reach_probs);
-                                                                recursive_br(self.range_manager, &mut results, val, self.oop, &new_villain_reach_prob, new_masks);
-                                                            }
-                                                            results
-                                                        })
-                                                        .collect();
-        
-                if deck_left != 0 {
-                    for (count,child) in self.node.children.iter().enumerate() {
-                        let new_masks = match child.node_type {
-                            NodeType::ChanceNodeCard((new,old)) => (new,old),
-                            _ => panic!("panicando!"),
-                        };
-                        let reach_mapping = self.range_manager.get_reach_mapping(self.oop, new_masks.0, new_masks.1);
-                        
-                        for (i, mapping) in reach_mapping.iter().enumerate() {
-                            self.result[*mapping as usize] += results[count][i] * (1.0/deck_left as f64);
-                        }
+}
+
+/// Writes the value of every hero hand at `node` into `result` when the hero plays a best response
+/// against the villain's average strategy
+fn best_response(ctx: &Ctx, result: &mut [f32], node: &Node, villain_reach_probs: &[f32], hero_range: &[Combo], villain_range: &[Combo]) {
+    match node.node_type {
+        NodeType::TerminalNode(TerminalType::TerminalShowdown) => {
+            showdown_payoffs(result, hero_range, villain_range, villain_reach_probs, node.pot_size as f32);
+        },
+        NodeType::TerminalNode(TerminalType::TerminalFold(fold_position)) => {
+            let value = if ctx.oop == fold_position { -(node.pot_size as f32) } else { node.pot_size as f32 };
+            fold_payoffs(result, hero_range, villain_range, villain_reach_probs, value);
+        },
+        NodeType::ChanceNodeCard(_) => {
+            best_response(ctx, result, &node.children[0], villain_reach_probs, hero_range, villain_range);
+        },
+        NodeType::ChanceNode(deck_left) => {
+            let oop = ctx.oop;
+            let child_results: Vec<Vec<f32>> = node.children.par_iter()
+                .map(|child| {
+                    let board_masks = match child.node_type {
+                        NodeType::ChanceNodeCard(board_masks) => board_masks,
+                        _ => unreachable!(),
+                    };
+                    let (hero_range, villain_range) = ctx.ranges(board_masks);
+                    let mut results = vec![0.0f32; hero_range.len()];
+                    if deck_left == 0 {
+                        best_response(ctx, &mut results, child, villain_reach_probs, hero_range, villain_range);
+                    } else {
+                        let reach_mapping = ctx.range_manager.get_reach_mapping(!oop, board_masks.0, board_masks.1);
+                        let new_villain_reach_probs: Vec<f32> = reach_mapping.iter().map(|&m| unsafe { *villain_reach_probs.get_unchecked(m as usize) }).collect();
+                        best_response(ctx, &mut results, child, &new_villain_reach_probs, hero_range, villain_range);
                     }
-                } else {
-                    for i in 0..hero_hands {
-                        for (count,_) in self.node.children.iter().enumerate() {
-                            self.result[i] += results[count][i];
-                        }
+                    results
+                })
+                .collect();
+
+            result.fill(0.0);
+            if deck_left != 0 {
+                let scale = 1.0/deck_left as f32;
+                for (child, results) in node.children.iter().zip(&child_results) {
+                    let board_masks = match child.node_type {
+                        NodeType::ChanceNodeCard(board_masks) => board_masks,
+                        _ => unreachable!(),
+                    };
+                    let reach_mapping = ctx.range_manager.get_reach_mapping(oop, board_masks.0, board_masks.1);
+                    for (&mapping, &value) in reach_mapping.iter().zip(results) {
+                        unsafe { *result.get_unchecked_mut(mapping as usize) += value * scale; }
                     }
                 }
-            }, 
-            NodeType::ChanceNodeCard(_) => { 
-                let mut new_br = BestResponseState::new(self.range_manager, self.result,  &self.node.children[0], self.oop, self.villain_reach_probs, self.board_masks);
-                new_br.run();
-            }, 
-            NodeType::ActionNode(ref node_info) => {
-                let n_actions = node_info.actions_num;                
-                if node_info.oop == self.oop {
-                    let hero_hands = if self.oop == true {
-                        self.node.oop_num_hands
-                    } else {
-                        self.node.ip_num_hands
-                    };
-                
-                    *self.result = vec![f64::MIN; hero_hands];
-   
-                    let results: Vec<_> = self.node.children.par_iter()
-                                                            .map(|val| {
-                                                                let mut results = vec![0.0; hero_hands];
-                                                                recursive_br(self.range_manager, &mut results, val, self.oop, self.villain_reach_probs, self.board_masks);
-                                                                results
-                                                            })
-                                                            .collect();
-                    
-                    for (i,result) in self.result.iter_mut().enumerate() {
-                        for results_j in results.iter() {
-                            if results_j[i] > *result {
-                                *result = results_j[i];
-                            }
-                        }
+            } else {
+                for (i, value) in result.iter_mut().enumerate() {
+                    for results in &child_results {
+                        *value += results[i];
                     }
-                    
-                    
-                } else {
-                    let villain_pos = self.oop ^ true;
-                    let average_strategy = node_info.get_average_strategy();
-                    let hero_hands = if self.oop == true {
-                        self.node.oop_num_hands
-                    } else {
-                        self.node.ip_num_hands
-                    };
-                    let villain_hands = if self.oop == true {
-                        self.node.ip_num_hands
-                    } else {
-                        self.node.oop_num_hands
-                    };               
-                    *self.result = vec![0.0; hero_hands];
-       
-                    let results: Vec<_> = self.node.children.par_iter()
-                                                            .enumerate()
-                                                            .map(|(count, val)| {
-                                                                let mut results = vec![0.0; hero_hands];
-                                                                let mut offset = 0;
-                                                                let mut new_villain_reach_prob = vec![0.0; villain_hands];
-                                                                for (i, reach_prob) in new_villain_reach_prob.iter_mut().enumerate() {
-                                                                    *reach_prob = average_strategy[offset+count] * self.villain_reach_probs[i];
-                                                                    
-                                                                    offset += n_actions;
-                                                                }
-                                                                recursive_br(self.range_manager, &mut results, val, self.oop, &new_villain_reach_prob, self.board_masks);
-                                                                results
-                                                            })
-                                                            .collect();
-                    
-                    for (i, result) in self.result.iter_mut().enumerate() {
-                        for results_j in results.iter() {
-                            *result += results_j[i];
-                        }
-                    }
-                                        
                 }
-                
-            },
-        }
+            }
+        },
+        NodeType::ActionNode(ref node_info) => {
+            if node_info.actions_num == 1 {
+                // a single action is always taken, whoever acts
+                best_response(ctx, result, &node.children[0], villain_reach_probs, hero_range, villain_range);
+                return;
+            }
+
+            let mut results = vec![0.0f32; result.len()];
+            if node_info.oop == ctx.oop {
+                // Hero picks the best action for every hand
+                best_response(ctx, result, &node.children[0], villain_reach_probs, hero_range, villain_range);
+                for child in &node.children[1..] {
+                    best_response(ctx, &mut results, child, villain_reach_probs, hero_range, villain_range);
+                    for (value, &child_value) in result.iter_mut().zip(&results) {
+                        *value = value.max(child_value);
+                    }
+                }
+            } else {
+                // Villain plays its average strategy
+                let average_strategy = node_info.get_average_strategy_by_action();
+                let mut new_villain_reach_probs = vec![0.0f32; villain_reach_probs.len()];
+                result.fill(0.0);
+                for (child, probs) in node.children.iter().zip(average_strategy.chunks_exact(villain_reach_probs.len())) {
+                    for ((reach_prob, &prob), &villain_reach_prob) in new_villain_reach_probs.iter_mut().zip(probs).zip(villain_reach_probs) {
+                        *reach_prob = prob * villain_reach_prob;
+                    }
+                    best_response(ctx, &mut results, child, &new_villain_reach_probs, hero_range, villain_range);
+                    for (value, &child_value) in result.iter_mut().zip(&results) {
+                        *value += child_value;
+                    }
+                }
+            }
+        },
     }
 }

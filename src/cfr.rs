@@ -161,7 +161,7 @@ fn cfr(ctx: &Ctx, result: &mut [f32], node: &mut Node, villain_reach_probs: &[f3
 /// Showdown: win the pot against weaker villain hands, lose it against stronger ones.
 /// Both ranges are sorted by hand strength; card sums remove villain combos blocked by the hero.
 #[inline]
-fn showdown_payoffs<T: Float>(result: &mut [T], hero_range: &[Combo], villain_range: &[Combo], villain_reach_probs: &[T], value: T) {
+pub fn showdown_payoffs<T: Float>(result: &mut [T], hero_range: &[Combo], villain_range: &[Combo], villain_reach_probs: &[T], value: T) {
     let villain_hands = villain_range.len();
     unsafe {
         let mut card_sum_win = [T::default(); 52];
@@ -199,7 +199,7 @@ fn showdown_payoffs<T: Float>(result: &mut [T], hero_range: &[Combo], villain_ra
 
 /// Fold: `value` against every villain combo that doesn't share a card with the hero combo
 #[inline]
-fn fold_payoffs<T: Float>(result: &mut [T], hero_range: &[Combo], villain_range: &[Combo], villain_reach_probs: &[T], value: T) {
+pub fn fold_payoffs<T: Float>(result: &mut [T], hero_range: &[Combo], villain_range: &[Combo], villain_reach_probs: &[T], value: T) {
     unsafe {
         let mut villain_card_sum = [T::default(); 52];
         let mut villain_sum = T::default();
@@ -218,20 +218,4 @@ fn fold_payoffs<T: Float>(result: &mut [T], hero_range: &[Combo], villain_range:
             *value_out = (villain_sum - *villain_card_sum.get_unchecked(hero_combo.0 as usize) - *villain_card_sum.get_unchecked(hero_combo.1 as usize) + villain_reach) * value;
         }
     }
-}
-
-pub fn get_payoffs(oop: bool, range_manager: &RangeManager, board_masks: (u64, Option<u64>), node: &Node, villain_reach_probs: &[f64], terminal_type: &TerminalType) -> Vec<f64> {
-    let hero_range = &range_manager.get_range(oop, board_masks.0, board_masks.1).hands;
-    let villain_range = &range_manager.get_range(!oop, board_masks.0, board_masks.1).hands;
-    let mut results = vec![0.0; hero_range.len()];
-
-    match terminal_type {
-        TerminalType::TerminalShowdown => showdown_payoffs(&mut results, hero_range, villain_range, villain_reach_probs, node.pot_size as f64),
-        TerminalType::TerminalFold(fold_position) => {
-            let value = if oop == *fold_position { -(node.pot_size as f64) } else { node.pot_size as f64 };
-            fold_payoffs(&mut results, hero_range, villain_range, villain_reach_probs, value);
-        },
-    }
-
-    results
 }
