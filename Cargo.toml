@@ -6,7 +6,6 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-rust_poker = "0.1.13"
 permutation = "0.4.0"
 rayon = "1.5"
 mimalloc = { version = "0.1.17", default-features = false }

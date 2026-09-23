@@ -3,7 +3,7 @@ use crate::range::*;
 use crate::cfr::*;
 use crate::best_response::*;
 use std::time::Instant;
-use rust_poker::hand_range::{get_card_mask};
+use crate::cards::get_card_mask;
 use std::collections::HashMap;
 
 pub struct Trainer {

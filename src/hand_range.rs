@@ -10,8 +10,7 @@ use std::cmp::Ordering;
 use std::fmt;
 use std::iter::FromIterator;
 
-use rust_poker::constants::*;
-use rust_poker::hand_evaluator::{Hand,evaluate};
+use crate::cards::*;
 
 use crate::isomorphism::*;
 
@@ -29,7 +28,7 @@ impl fmt::Display for Combo {
     /// # Example
     /// ```
     /// // prints '2s2h'
-    /// use rust_poker::hand_range::Combo;
+    /// use crate::hand_range::Combo;
     /// let hand = Combo(0, 1, 100);
     /// println!("{}", hand.to_string());
     /// ```
@@ -46,12 +45,7 @@ impl fmt::Display for Combo {
 
 impl Combo {
     pub fn update_rank(&mut self, board_mask: u64) {
-        let board = Hand::from_bit_mask(board_mask);
-        let hole_cards = Hand::from_hole_cards(self.0, self.1);
-        
-        let hand = board + hole_cards;
-        
-        self.3 = evaluate(&hand);
+        self.3 = evaluate(board_mask | (1u64 << self.0) | (1u64 << self.1));
     }
     
     pub fn update_joint(&mut self, range: &HandRange) {
@@ -177,7 +171,7 @@ impl HandRange {
     /// # Example
     ///
     /// ```
-    /// use rust_poker::hand_range::HandRange;
+    /// use crate::hand_range::HandRange;
     /// let range = HandRange::from_string("JJ+".to_string());
     /// ```
     pub fn from_string(text: String) -> Self {
@@ -386,65 +380,6 @@ impl HandRange {
         // remove duplicates
         self.hands.dedup();
     }
-}
-
-/// Convert lowercase rank char to u8
-///
-/// # Example
-///
-/// ```
-/// use rust_poker::hand_range::char_to_rank;
-/// let rank = char_to_rank('a');
-/// ```
-pub fn char_to_rank(c: char) -> u8 {
-    match c {
-        'a' => 12,
-        'k' => 11,
-        'q' => 10,
-        'j' => 9,
-        't' => 8,
-        '9' => 7,
-        '8' => 6,
-        '7' => 5,
-        '6' => 4,
-        '5' => 3,
-        '4' => 2,
-        '3' => 1,
-        '2' => 0,
-        _ => u8::MAX,
-    }
-}
-
-/// Convert lowercase suit char to u8
-///
-/// # Example
-///
-/// ```
-/// use rust_poker::hand_range::char_to_suit;
-/// let rank = char_to_suit('s');
-/// ```
-pub fn char_to_suit(c: char) -> u8 {
-    match c {
-        's' => 0,
-        'h' => 1,
-        'd' => 2,
-        'c' => 3,
-        _ => u8::MAX,
-    }
-}
-
-/// Converts 64 bit card mask to string representation
-pub fn mask_to_string(card_mask: u64) -> String {
-    let mut card_str = String::new();
-    for i in 0..CARD_COUNT {
-        if ((1u64 << i) & card_mask) != 0 {
-            let rank = i >> 2;
-            let suit = i & 3;
-            card_str.push(RANK_TO_CHAR[usize::from(rank)]);
-            card_str.push(SUIT_TO_CHAR[usize::from(suit)]);
-        }
-    }
-    card_str
 }
 
 #[cfg(test)]

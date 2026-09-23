@@ -2,9 +2,9 @@ use crate::range::*;
 use crate::postfloptree::*;
 use crate::cfr::*;
 use crate::hand_range::*;
-use rust_poker::constants::RANK_TO_CHAR;
-use rust_poker::constants::SUIT_TO_CHAR;
-use rust_poker::hand_range::{get_card_mask};
+use crate::cards::RANK_TO_CHAR;
+use crate::cards::SUIT_TO_CHAR;
+use crate::cards::get_card_mask;
 use rayon::prelude::*;
 
 pub struct BestResponse<'a> {

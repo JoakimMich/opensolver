@@ -1,12 +1,11 @@
-use rust_poker::hand_range::{get_card_mask};
+use crate::cards::{get_card_mask, char_to_rank, char_to_suit};
 use std::collections::HashMap;
 
 use crate::hand_range::*;
 use crate::isomorphism::*;
 
-use rust_poker::hand_evaluator::{Hand};
-use rust_poker::constants::RANK_TO_CHAR;
-use rust_poker::constants::SUIT_TO_CHAR;
+use crate::cards::RANK_TO_CHAR;
+use crate::cards::SUIT_TO_CHAR;
 
 extern crate permutation;
 
@@ -216,7 +215,7 @@ impl RangeManager {
     
     pub fn update_joints(&mut self) {
         for (key,value) in self.oop_board_range.iter_mut() {
-            let community_cards = Hand::from_bit_mask(key.0).count();
+            let community_cards = key.0.count_ones();
             if community_cards != 5 {
                 continue;
             }
@@ -227,7 +226,7 @@ impl RangeManager {
         }
         
         for (key,value) in self.ip_board_range.iter_mut() {
-            let community_cards = Hand::from_bit_mask(key.0).count();
+            let community_cards = key.0.count_ones();
             if community_cards != 5 {
                 continue;
             }
@@ -244,7 +243,7 @@ impl RangeManager {
         let ip_hashmap = self.ip_board_range.clone();
         
         for (key,value) in self.oop_board_range.iter_mut() {
-            let community_cards = Hand::from_bit_mask(key.0).count();
+            let community_cards = key.0.count_ones();
             
             if community_cards < 4 {
                 continue;
@@ -314,7 +313,7 @@ impl RangeManager {
         }
         
         for (key,value) in self.ip_board_range.iter_mut() {
-            let community_cards = Hand::from_bit_mask(key.0).count();
+            let community_cards = key.0.count_ones();
             
             if community_cards < 4 {
                 continue;
