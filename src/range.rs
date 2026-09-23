@@ -44,8 +44,6 @@ pub struct RangeManager {
     pub oop_board_range: HashMap<(u64, Option<u64>), HandRange>,
     pub ip_board_range: HashMap<(u64, Option<u64>), HandRange>,
     pub initial_board: String,
-    pub oop_joint_combos: Vec<Option<usize>>,
-    pub ip_joint_combos: Vec<Option<usize>>,
     /// Cards dealt at each chance node board, and the isomorphic cards that are skipped
     isomorphisms: HashMap<u64, BoardIsomorphism>,
     /// Skip isomorphic turn and river cards
@@ -117,8 +115,6 @@ impl RangeManager {
             oop_board_range,
             ip_board_range,
             initial_board,
-            oop_joint_combos: vec![],
-            ip_joint_combos: vec![],
             isomorphisms: HashMap::default(),
             isomorphism: true,
             oop_reach_mapping: HashMap::default(),
@@ -143,16 +139,6 @@ impl RangeManager {
         }
     }
     
-    pub fn get_villain_reach(&self, oop: bool, board: u64, previous_board: Option<u64>, current_reach: &[f64]) -> Vec<f64> {
-        let villain_pos = oop ^ true;
-        let reach_mapping = self.get_reach_mapping(villain_pos, board, previous_board);
-        let mut new_reach = vec![0.0; reach_mapping.len()];
-        for (count,reach) in reach_mapping.iter().enumerate() {
-            new_reach[count] = current_reach[*reach as usize];
-        }
-        
-        new_reach
-    }
     
     pub fn update_joints(&mut self) {
         for (key,value) in self.oop_board_range.iter_mut() {

@@ -4,7 +4,6 @@ use crate::cfr::*;
 use crate::best_response::*;
 use std::time::Instant;
 use crate::cards::get_card_mask;
-use std::collections::HashMap;
 
 pub struct Trainer {
     pub range_manager: RangeManager,
@@ -47,12 +46,11 @@ impl Trainer {
                 val * (self.root.pot_size as f64) / 100.0
             },
         };
-        let mut time_elapsed = now.elapsed().as_secs_f64();
         // a best response costs about one iteration, so exploitability is only checked now and then
         let mut next_check = 20;
         let mut last_check: Option<(u64, f64)> = None;
         loop {
-            time_elapsed = now.elapsed().as_secs_f64();
+            let time_elapsed = now.elapsed().as_secs_f64();
             match train_finish {
                 TrainFinish::Seconds(val) => {
                     if time_elapsed as u64 >= val {
