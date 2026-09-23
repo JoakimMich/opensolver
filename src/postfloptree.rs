@@ -1,6 +1,6 @@
 use crate::range::*;
-use std::cmp::min;
 use crate::cards::*;
+use crate::hand_range::Combo;
 use std::collections::HashMap;
 use std::fmt;
 
@@ -23,7 +23,6 @@ pub struct ActionNodeInfo {
     pub strategy_sum: Vec<f64>,
     regret_sum: Vec<f64>,
     pub actions_num: usize,
-    hands_num: usize,
 }
 
 impl ActionNodeInfo {
@@ -32,7 +31,7 @@ impl ActionNodeInfo {
         let strategy_sum = vec![0.0; hands_num * actions_num];
         let regret_sum = strategy_sum.clone();
         
-        ActionNodeInfo { oop, actions, strategy_sum, regret_sum, actions_num, hands_num }
+        ActionNodeInfo { oop, actions, strategy_sum, regret_sum, actions_num }
     }
     
     pub fn get_current_strategy(&self) -> Vec<f64> {
@@ -52,71 +51,52 @@ impl ActionNodeInfo {
     }
     
     pub fn update_regret_sum_1(&mut self, action_utilities: &[f64], n_action: usize) {
-        let mut offset = 0;
-        for utility in action_utilities.iter() {
-            self.regret_sum[offset+n_action] += utility;
-            offset += self.actions_num;
+        for (regrets, utility) in self.regret_sum.chunks_exact_mut(self.actions_num).zip(action_utilities) {
+            regrets[n_action] += utility;
         }
     }
-    
+
     pub fn update_regret_sum_2(&mut self, action_utilities: &[f64], n_iterations: u64) {
         let mut x = f64::powf(n_iterations as f64, ALPHA);
         x = x / (x + 1.0);
-        let mut offset = 0;
-        
-        for utility in action_utilities.iter() {
-            for j in 0..self.actions_num {
-                self.regret_sum[offset+j] -= utility;
-                if self.regret_sum[offset+j] > 0.0 {
-                    self.regret_sum[offset+j] *= x;
+
+        for (regrets, utility) in self.regret_sum.chunks_exact_mut(self.actions_num).zip(action_utilities) {
+            for regret in regrets {
+                *regret -= utility;
+                if *regret > 0.0 {
+                    *regret *= x;
                 } else {
-                    self.regret_sum[offset+j] *= BETA;
+                    *regret *= BETA;
                 }
             }
-            offset += self.actions_num;
         }
-    }
-    
-    pub fn update_strategy_sum(&mut self, strategy: &[f64], reach_probs: &[f64], n_iterations: u64 ) {
-        let x = f64::powf(n_iterations as f64 / (n_iterations as f64 + 1.0), GAMMA);
-        let mut offset = 0;
-        for reach_prob in reach_probs.iter() {
-            for j in 0..self.actions_num {
-                self.strategy_sum[offset+j] += strategy[offset+j] * reach_prob;
-                self.strategy_sum[offset+j] *= x;
-            }
-            
-            offset += self.actions_num;
-        }
-    }
-    
-    pub fn get_average_strategy(&self) -> Vec<f64> {
-        let mut average_strategy = vec![0.0; self.hands_num * self.actions_num];
-        let mut offset = 0;
-        
-        for _ in 0..self.hands_num {
-            let mut total = 0.0;
-            
-            for j in 0..self.actions_num {
-                total += self.strategy_sum[offset+j];
-            }
-            
-            if total > 0.0 {
-                for j in 0..self.actions_num {
-                    average_strategy[offset+j] = self.strategy_sum[offset+j] / total;
-                }
-            } else {
-                for j in 0..self.actions_num {
-                    average_strategy[offset+j] = 1.0/self.actions_num as f64;
-                }
-            }
-            
-            offset += self.actions_num;
-        }
-        
-        average_strategy
     }
 
+    pub fn update_strategy_sum(&mut self, strategy: &[f64], reach_probs: &[f64], n_iterations: u64 ) {
+        let x = f64::powf(n_iterations as f64 / (n_iterations as f64 + 1.0), GAMMA);
+        let n = self.actions_num;
+        for ((sums, hand_strategy), reach_prob) in self.strategy_sum.chunks_exact_mut(n).zip(strategy.chunks_exact(n)).zip(reach_probs) {
+            for (sum, action_prob) in sums.iter_mut().zip(hand_strategy) {
+                *sum += action_prob * reach_prob;
+                *sum *= x;
+            }
+        }
+    }
+
+    pub fn get_average_strategy(&self) -> Vec<f64> {
+        let mut average_strategy = self.strategy_sum.clone();
+
+        for hand_strategy in average_strategy.chunks_exact_mut(self.actions_num) {
+            let total: f64 = hand_strategy.iter().sum();
+            if total > 0.0 {
+                hand_strategy.iter_mut().for_each(|x| *x /= total);
+            } else {
+                hand_strategy.iter_mut().for_each(|x| *x = 1.0/self.actions_num as f64);
+            }
+        }
+
+        average_strategy
+    }
 }
 
 #[derive(Debug)]
@@ -165,167 +145,143 @@ impl fmt::Display for NodeInfo {
     }
 }
 
-fn chunks(s: &str, length: usize) -> impl Iterator<Item=&str> {
-    assert!(length > 0);
-    let mut indices = s.char_indices().map(|(idx, _)| idx).peekable();
-    
-    std::iter::from_fn(move || {
-        let start_idx = match indices.next() {
-            Some(idx) => idx,
-            None => return None,
-        };
-        for _ in 0..length - 1 {
-            indices.next();
-        }
-        let end_idx = match indices.peek() {
-            Some(idx) => *idx,
-            None => s.bytes().len(),
-        };
-        Some(&s[start_idx..end_idx])
-    })
+/// Key of the ranges on a board in the RangeManager: (board, turn board if solving from the flop
+/// and the board is a river)
+type RangeKey = (u64, Option<u64>);
+
+fn range_key(range_manager: &RangeManager, board: &str) -> RangeKey {
+    let previous_board = if range_manager.initial_board.len() == 6 && board.len() == 10 {
+        Some(get_card_mask(&board[0..8]))
+    } else {
+        None
+    };
+    (get_card_mask(board), previous_board)
+}
+
+/// Position of a combo in the UPI hand order
+fn hand_order_index(hand: &Combo, hand_order_mapping: &HashMap<String, usize>) -> usize {
+    let hand_str = hand.to_string();
+    match hand_order_mapping.get(&hand_str) {
+        Some(idx) => *idx,
+        None => {
+            let hand_reversed = format!("{}{}", &hand_str[2..], &hand_str[0..2]);
+            *hand_order_mapping.get(&hand_reversed).unwrap()
+        },
+    }
+}
+
+/// Where a UPI line leads: the node and the chips invested along the way
+struct LineState<'a> {
+    node: &'a Node,
+    board: String,
+    oop_invested: u32,
+    ip_invested: u32,
+    start_pot: u32,
+    previous_invested: u32,
 }
 
 impl Node {
     pub fn new_root(chance_start_stack: u32, pot_size: u32, oop_num_hands: usize, ip_num_hands: usize) -> Node {
         Node { node_type: NodeType::ChanceNode(0), children: vec![] , pot_size, chance_start_stack, oop_invested: 0, ip_invested: 0, chance_start_pot: pot_size, oop_num_hands, ip_num_hands}
     }
-    
+
+    /// A node on the same street as `self`, holding the ranges for `range_key`
+    fn new_child(&self, node_type: NodeType, pot_size: u32, oop_invested: u32, ip_invested: u32, range_manager: &RangeManager, range_key: RangeKey) -> Node {
+        Node {
+            node_type,
+            children: vec![],
+            pot_size,
+            chance_start_stack: self.chance_start_stack,
+            oop_invested,
+            ip_invested,
+            chance_start_pot: self.chance_start_pot,
+            oop_num_hands: range_manager.get_num_hands(true, range_key.0, range_key.1),
+            ip_num_hands: range_manager.get_num_hands(false, range_key.0, range_key.1),
+        }
+    }
+
     // functions for UPI compatibility
-    
-    fn find_node(&self, line: &String, range_manager: &RangeManager) -> (String, &Node, u32, u32, u32, u32) {
-        let v = line.as_str().split(':').collect::<Vec<&str>>();
-        let mut current_board = range_manager.initial_board.clone();
-        
+
+    /// Follows a UPI line (e.g. "r:0:c:b94:QdKs") from the root. `on_action` is called for every
+    /// action taken along the way, with the acting node, the index of the action and the board.
+    fn walk_line<'a>(&'a self, line: &str, range_manager: &RangeManager, mut on_action: impl FnMut(&ActionNodeInfo, usize, &str)) -> LineState<'a> {
+        let v = line.split(':').collect::<Vec<&str>>();
+
         //todo: better error handling
-        if (v[0] != "r" || v.len() < 2 || v[1] != "0") && (line != "r"){
+        if (v[0] != "r" || v.len() < 2 || v[1] != "0") && line != "r" {
             panic!("Invalid line input");
         }
-        
-        let mut current_node = if line == "r" { 
-            &self.children[0]
-        } else {
-            &self.children[0].children[0]
+
+        let mut state = LineState {
+            node: if line == "r" { &self.children[0] } else { &self.children[0].children[0] },
+            board: range_manager.initial_board.clone(),
+            oop_invested: 0,
+            ip_invested: 0,
+            start_pot: self.children[0].pot_size,
+            previous_invested: 0,
         };
-        
-        let mut oop_invested = 0;
-        let mut ip_invested = 0;
-        let mut previous_invested = 0;
-        let start_pot = current_node.pot_size;
-        
-        if v.len() > 2 {
-            let mut latest_action = "";
-            for action in &v[2..] {
-                if action.contains("b") {
-                    let mut sizing: u32 = action[1..].parse().unwrap();
-                    sizing -= previous_invested;
-                    let action_lookup = if latest_action.contains("b") {
-                        ActionType::Raise{sizing}
+
+        let mut latest_action = "";
+        for &action in v.iter().skip(2) {
+            if action == "f" || action == "c" || action.contains('b') {
+                let facing_bet = latest_action.contains('b');
+                // Chips the actor has invested on this street after the action, if it changes
+                let (action_lookup, invested) = if action == "f" {
+                    (ActionType::Fold, None)
+                } else if action == "c" {
+                    if facing_bet {
+                        let call_sizing = latest_action[1..].parse::<u32>().unwrap() - state.previous_invested;
+                        (ActionType::Call, Some(call_sizing))
                     } else {
-                        ActionType::Bet(sizing)
-                    };
-                    match &current_node.node_type {
-                        NodeType::ActionNode(node_info) => {
-                            let mut action_num = -1;
-                            
-                            for (i,action_node) in node_info.actions.iter().enumerate() {
-                                if *action_node == action_lookup {
-                                    current_node = &current_node.children[i as usize];
-                                    action_num = i as i64;
-                                }
-                            }
-                            
-                            if action_num == -1 {
-                                //todo: better error handling
-                                panic!("Couldn't find line");
-                            }
-                            
-                            if node_info.oop == true {
-                                oop_invested = sizing + previous_invested;
-                            } else {
-                                ip_invested = sizing + previous_invested;
-                            }
-                        },
-                        _ => panic!("Couldn't find root action node"),
-                    };
-                } else if action == &"c" {
-                    // check if call or check, by checking latest action
-                    let latest_sizing = if latest_action.contains("b") {
-                        let mut sizing: u32 = latest_action[1..].parse().unwrap();
-                        sizing -= previous_invested;
-                        sizing
-                    } else {
-                        0
-                    };
-                    let action_lookup = if latest_action.contains("b") {
-                        ActionType::Call
-                    } else {
-                        ActionType::Check
-                    };
-                    
-                    match &current_node.node_type {
-                        NodeType::ActionNode(node_info) => {
-                            let mut action_num = -1;
-                            
-                            for (i,action_node) in node_info.actions.iter().enumerate() {
-                                if *action_node == action_lookup {
-                                    current_node = &current_node.children[i as usize];
-                                    action_num = i as i64;
-                                }
-                            }
-                            
-                            if action_num == -1 {
-                                //todo: better error handling
-                                panic!("Couldn't find line");
-                            }
-                            
-                            if node_info.oop == true {
-                                oop_invested = latest_sizing + previous_invested;
-                            } else {
-                                ip_invested = latest_sizing + previous_invested;
-                            }
-                        },
-                        _ => panic!("Couldn't find root action node"),
-                    };
-                    previous_invested += latest_sizing;
-                } else {
-                    // todo: error handling for invalid input cards
-                    let mut new_board = current_board.clone();
-                    let rank = action.chars().next().unwrap();
-                    let suit = action.chars().nth(1).unwrap();
-                    new_board.push(rank);
-                    new_board.push(suit);
-                    let new_board_mask = get_card_mask(&new_board);
-                    let old_board_mask = if range_manager.initial_board.len() == 6 && current_board.len() == 8 {
-                        Some(get_card_mask(&current_board))
-                    } else {
-                        None
-                    };
-                    for (i, child) in current_node.children.iter().enumerate() {
-                        let child_id = match child.node_type {
-                            NodeType::ChanceNodeCard((new, old)) => {
-                                if new == new_board_mask && old == old_board_mask {
-                                    Some(i)
-                                } else {
-                                    None
-                                }
-                            },
-                            _ => None,
-                        };
-                        
-                        if let Some(x) = child_id {
-                            current_node = &current_node.children[x].children[0];
-                            break;
-                        }
+                        (ActionType::Check, Some(0))
                     }
-                    current_board = new_board;
+                } else {
+                    let sizing = action[1..].parse::<u32>().unwrap() - state.previous_invested;
+                    if facing_bet {
+                        (ActionType::Raise{sizing}, Some(sizing))
+                    } else {
+                        (ActionType::Bet(sizing), Some(sizing))
+                    }
+                };
+
+                let node_info = match &state.node.node_type {
+                    NodeType::ActionNode(node_info) => node_info,
+                    _ => panic!("Couldn't find root action node"),
+                };
+                //todo: better error handling
+                let action_num = node_info.actions.iter().position(|a| *a == action_lookup).expect("Couldn't find line");
+                on_action(node_info, action_num, &state.board);
+
+                if let Some(sizing) = invested {
+                    if node_info.oop {
+                        state.oop_invested = sizing + state.previous_invested;
+                    } else {
+                        state.ip_invested = sizing + state.previous_invested;
+                    }
+                    if action == "c" {
+                        state.previous_invested += sizing;
+                    }
                 }
-                latest_action = action;
+                state.node = &state.node.children[action_num];
+            } else {
+                // todo: error handling for invalid input cards
+                let new_board = format!("{}{}", state.board, &action[0..2]);
+                let new_key = range_key(range_manager, &new_board);
+                let card_node = state.node.children.iter().find(|child| match child.node_type {
+                    NodeType::ChanceNodeCard(key) => key == new_key,
+                    _ => false,
+                });
+                if let Some(card_node) = card_node {
+                    state.node = &card_node.children[0];
+                }
+                state.board = new_board;
             }
+            latest_action = action;
         }
-        
-        (current_board, current_node, oop_invested, ip_invested, start_pot, previous_invested)
+
+        state
     }
-    
+
     pub fn get_line_freq(&self, line: String, range_manager: &RangeManager, hand_order_mapping: &HashMap<String, usize>) -> f64 {
         let mut line_freqs = vec![0.0, 0.0];
         for (i,&oop) in [false, true].iter().enumerate() {
@@ -333,409 +289,140 @@ impl Node {
             let final_range = self.get_range(oop, line.clone(), range_manager, hand_order_mapping);
             let start_range_sum: f64 = start_range.iter().sum();
             let mut line_freq = 0.0;
-            
+
             for (j,weight) in final_range.iter().enumerate() {
                 if weight > &0.0 {
                     let hand_freq = weight / start_range[j];
                     line_freq += hand_freq * (start_range[j]/start_range_sum)
                 }
             }
-            
+
             line_freqs[i] = line_freq
         }
         line_freqs[0]*line_freqs[1]
     }
-    
+
     pub fn get_node(&self, line: String, range_manager: &RangeManager) -> NodeInfo {
-        let v: Vec<&str> = line.rsplitn(2, ':').collect();
-        if v.len() > 1 {
-            let child_info = self.get_children(v[1].to_string(), range_manager);
-            for child in child_info {
-                if child.line == line {
-                    return child;
-                }
-            }
-        } else {
-            let mut current_node = &self.children[0];
-            let mut oop_invested = 0;
-            let mut ip_invested = 0;
-            let start_pot = current_node.pot_size;
-            return NodeInfo { line: "r".to_string(), node_type: "ROOT".to_string(), board: range_manager.initial_board.clone(), pot: (oop_invested,ip_invested,start_pot), children_count: 1, flags: vec![] };
+        match line.rsplit_once(':') {
+            Some((parent_line, _)) => {
+                self.get_children(parent_line.to_string(), range_manager)
+                    .into_iter()
+                    .find(|child| child.line == line)
+                    .expect("Couldn't find line of node")
+            },
+            None => NodeInfo { line: "r".to_string(), node_type: "ROOT".to_string(), board: range_manager.initial_board.clone(), pot: (0, 0, self.children[0].pot_size), children_count: 1, flags: vec![] },
         }
-        
-        panic!("Couldn't find line of node");
     }
-    
+
     pub fn get_children(&self, line: String, range_manager: &RangeManager) -> Vec<NodeInfo> {
-        let mut children_info_vec = vec![];
-        
-        let (current_board, current_node, mut oop_invested, mut ip_invested, mut start_pot, previous_invested) = self.find_node(&line, range_manager);
-        
-        match &current_node.node_type {
-            NodeType::ActionNode(node_info_current) => {
-                for (i,child) in current_node.children.iter().enumerate() {
-                    let child_info = match &child.node_type {
-                        NodeType::ActionNode(node_info_child) => {
-                            let mut new_line = line.clone();
-                            new_line.push(':');
-                            let next_action = match node_info_current.actions[i] {
-                                ActionType::Check => {
-                                    "c".to_string()
-                                },
+        let state = self.walk_line(&line, range_manager, |_, _, _| {});
+        let node = state.node;
+
+        match &node.node_type {
+            NodeType::ActionNode(node_info) => {
+                let mut children_info = vec![];
+                for (action, child) in node_info.actions.iter().zip(&node.children) {
+                    let mut oop_invested = state.oop_invested;
+                    let mut ip_invested = state.ip_invested;
+                    // a call matches the larger investment
+                    let called = oop_invested.max(ip_invested);
+
+                    let (next_action, node_type, children_count) = match &child.node_type {
+                        NodeType::ActionNode(child_info) => {
+                            let next_action = match *action {
+                                ActionType::Check => "c".to_string(),
                                 ActionType::Call => {
-                                    if oop_invested > ip_invested {
-                                        ip_invested = oop_invested;
-                                    } else {
-                                        oop_invested = ip_invested;
-                                    }
+                                    (oop_invested, ip_invested) = (called, called);
                                     "c".to_string()
                                 },
-                                ActionType::Bet(sizing) => {
-                                    if node_info_current.oop == true {
-                                        oop_invested = child.oop_invested + previous_invested;
+                                ActionType::Bet(sizing) | ActionType::Raise{sizing} => {
+                                    if node_info.oop {
+                                        oop_invested = child.oop_invested + state.previous_invested;
                                     } else {
-                                        ip_invested = child.ip_invested + previous_invested;
-                                    };
-                                    format!("b{}",sizing+previous_invested)
-                                },
-                                ActionType::Raise{sizing} => {
-                                    if node_info_current.oop == true {
-                                        oop_invested = child.oop_invested + previous_invested;
-                                    } else {
-                                        ip_invested = child.ip_invested + previous_invested;
+                                        ip_invested = child.ip_invested + state.previous_invested;
                                     }
-                                    format!("b{}",sizing+previous_invested)
+                                    format!("b{}", sizing + state.previous_invested)
                                 },
-                                ActionType::Fold => {
-                                    "f".to_string()
-                                }
+                                ActionType::Fold => "f".to_string(),
                             };
-                            let node_type = if node_info_child.oop == true {
-                                "OOP_DEC".to_string()
-                            } else {
-                                "IP_DEC".to_string()
-                            };
-                            new_line.push_str(&next_action);
-                            let child_info = NodeInfo { line: new_line, node_type: node_type, board: current_board.clone(), pot: (oop_invested, ip_invested, start_pot), children_count: child.children.len() as u32, flags: vec![] };
-                            children_info_vec.push(child_info);
+                            let node_type = if child_info.oop { "OOP_DEC" } else { "IP_DEC" };
+                            (next_action, node_type, child.children.len() as u32)
                         },
-                        NodeType::TerminalNode(terminal_type) => {
-                            let mut new_line = line.clone();
-                            new_line.push(':');
-                            let next_action = match terminal_type {
-                                TerminalType::TerminalFold(_) => {
-                                    "f".to_string()
-                                },
-                                TerminalType::TerminalShowdown => {
-                                    if oop_invested > ip_invested {
-                                        ip_invested = oop_invested;
-                                    } else {
-                                        oop_invested = ip_invested;
-                                    }
-                                    "c".to_string()
-                                },
-                            };
-                            new_line.push_str(&next_action);
-                            let child_info = NodeInfo { line: new_line, node_type: "END_NODE".to_string(), board: current_board.clone(), pot: (oop_invested, ip_invested, start_pot), children_count: 0, flags: vec![] };
-                            children_info_vec.push(child_info);
+                        NodeType::TerminalNode(TerminalType::TerminalFold(_)) => ("f".to_string(), "END_NODE", 0),
+                        NodeType::TerminalNode(TerminalType::TerminalShowdown) => {
+                            (oop_invested, ip_invested) = (called, called);
+                            ("c".to_string(), "END_NODE", 0)
                         },
                         NodeType::ChanceNode(children_count) => {
-                            if oop_invested > ip_invested {
-                                ip_invested = oop_invested;
-                            } else {
-                                oop_invested = ip_invested;
-                            }
-                            let mut new_line = line.clone();
-                            new_line.push(':');
-                            new_line.push('c');
-                            let child_info = NodeInfo { line: new_line, node_type: "SPLIT_NODE".to_string(), board: current_board.clone(), pot: (oop_invested, ip_invested, start_pot), children_count: *children_count as u32, flags: vec![] };
-                            children_info_vec.push(child_info);
+                            (oop_invested, ip_invested) = (called, called);
+                            ("c".to_string(), "SPLIT_NODE", *children_count as u32)
                         },
-                        _ => (),
+                        NodeType::ChanceNodeCard(_) => continue,
                     };
+
+                    children_info.push(NodeInfo { line: format!("{}:{}", line, next_action), node_type: node_type.to_string(), board: state.board.clone(), pot: (oop_invested, ip_invested, state.start_pot), children_count, flags: vec![] });
                 }
+                children_info
             },
             NodeType::ChanceNode(_) => {
-                let cards_old = chunks(&current_board, 2).collect::<Vec<&str>>();;
-                for child in &current_node.children {
-                    match child.node_type {
-                        NodeType::ChanceNodeCard((board_mask, _)) => {
-                            let new_board = mask_to_string(board_mask);
-                            let cards_new = chunks(&new_board, 2).collect::<Vec<&str>>();;
-                            let mut new_card = "";
-                            for card in cards_new {
-                                if cards_old.contains(&card) == false {
-                                    new_card = card;
-                                }
-                            }
-                            
-                            let mut new_board = current_board.clone();
-                            new_board.push_str(new_card);
-                            let mut new_line = line.clone();
-                            new_line.push(':');
-                            new_line.push_str(new_card);
-                            let child_info = NodeInfo { line: new_line, node_type: "OOP_DEC".to_string(), board: new_board, pot: (oop_invested, ip_invested, start_pot), children_count: child.children[0].children.len() as u32, flags: vec![] };
-                            children_info_vec.push(child_info);
-                        },
+                let board_mask = get_card_mask(&state.board);
+                node.children.iter().map(|child| {
+                    let new_card = match child.node_type {
+                        NodeType::ChanceNodeCard((new_board_mask, _)) => mask_to_string(new_board_mask & !board_mask),
                         _ => panic!("all children in chance node should be ChanceNodeCard"),
                     };
-                }
+                    NodeInfo { line: format!("{}:{}", line, new_card), node_type: "OOP_DEC".to_string(), board: format!("{}{}", state.board, new_card), pot: (state.oop_invested, state.ip_invested, state.start_pot), children_count: child.children[0].children.len() as u32, flags: vec![] }
+                }).collect()
             },
-            NodeType::ChanceNodeCard(board_mask) => {
+            NodeType::ChanceNodeCard(_) => {
                 // root
-                let child_info = NodeInfo { line: "r:0".to_string(), node_type: "OOP_DEC".to_string(), board: current_board, pot: (oop_invested, ip_invested, start_pot), children_count: current_node.children[0].children.len() as u32, flags: vec![] };
-                children_info_vec.push(child_info);
+                vec![NodeInfo { line: "r:0".to_string(), node_type: "OOP_DEC".to_string(), board: state.board, pot: (state.oop_invested, state.ip_invested, state.start_pot), children_count: node.children[0].children.len() as u32, flags: vec![] }]
             },
-            _ => {
-                println!("do nuufing, shoudlnt even be reached here???");
-            },
-        };
-        
-        children_info_vec
+            NodeType::TerminalNode(_) => vec![],
+        }
     }
-    
+
     pub fn get_strategy(&self, line: String, range_manager: &RangeManager, hand_order_mapping: &HashMap<String, usize>) -> Vec<Vec<f64>> {
-        let (current_board, current_node, mut oop_invested, mut ip_invested, mut start_pot, previous_invested) = self.find_node(&line, range_manager);
-        
+        let state = self.walk_line(&line, range_manager, |_, _, _| {});
+
         // todo: better error handling
-        match &current_node.node_type {
+        match &state.node.node_type {
             NodeType::ActionNode(node_info) => {
                 let mut final_strategy = vec![vec![0.0; hand_order_mapping.len()]; node_info.actions_num];
-                let new_board_mask = get_card_mask(&current_board);
-                let old_board_mask = if range_manager.initial_board.len() == 6 && current_board.len() == 10 {
-                    Some(get_card_mask(&current_board[0..8].to_string()))
-                } else {
-                    None
-                };
-                let player_range = &range_manager.get_range(node_info.oop, new_board_mask, old_board_mask).hands;
-                let mut player_range_mapping = HashMap::new();
-                for hand in player_range {
-                    let hand_idx_temp = hand_order_mapping.get(&hand.to_string());
-                    let hand_reversed = format!("{}{}", &hand.to_string()[2..], &hand.to_string()[0..2]);
-                    let hand_idx = match hand_idx_temp {
-                        Some(x) => x,
-                        None => {
-                            hand_order_mapping.get(&hand_reversed).unwrap()
-                        },
-                    };
-                    player_range_mapping.insert((hand.0, hand.1), hand_idx);
-                }
+                let key = range_key(range_manager, &state.board);
+                let player_range = &range_manager.get_range(node_info.oop, key.0, key.1).hands;
                 let average_strategy = node_info.get_average_strategy();
-                let mut counter = 0;
-                average_strategy.chunks(node_info.actions_num).for_each(|slice| {
-                    for (i, action_freq) in slice.iter().enumerate() {
-                        final_strategy[i][**player_range_mapping.get(&(player_range[counter].0, player_range[counter].1)).unwrap() as usize] = *action_freq;
+                for (hand, action_freqs) in player_range.iter().zip(average_strategy.chunks(node_info.actions_num)) {
+                    let hand_idx = hand_order_index(hand, hand_order_mapping);
+                    for (i, action_freq) in action_freqs.iter().enumerate() {
+                        final_strategy[i][hand_idx] = *action_freq;
                     }
-                    counter += 1;
-                });
+                }
                 final_strategy
             },
             _ => panic!("incorrect path"),
         }
     }
-    
+
     pub fn get_range(&self, oop: bool, line: String, range_manager: &RangeManager, hand_order_mapping: &HashMap<String, usize>) -> Vec<f64> {
-        let v = line.as_str().split(':').collect::<Vec<&str>>();
         let mut final_range = vec![0.0; hand_order_mapping.len()];
-        let mut player_range_mapping = HashMap::new();
-        let mut current_board = range_manager.initial_board.clone();
-        let mut player_range = &range_manager.get_range(oop, get_card_mask(&range_manager.initial_board), None).hands;
-        
-        for hand in player_range {
-            let hand_idx_temp = hand_order_mapping.get(&hand.to_string());
-            let hand_reversed = format!("{}{}", &hand.to_string()[2..], &hand.to_string()[0..2]);
-            let hand_idx = match hand_idx_temp {
-                Some(x) => x,
-                None => {
-                    hand_order_mapping.get(&hand_reversed).unwrap()
-                },
-            };
-            final_range[*hand_idx as usize] = hand.2  as f64 / 100.0;
-            player_range_mapping.insert((hand.0, hand.1), hand_idx);
+        for hand in &range_manager.get_range(oop, get_card_mask(&range_manager.initial_board), None).hands {
+            final_range[hand_order_index(hand, hand_order_mapping)] = hand.2 as f64 / 100.0;
         }
-        
-        if (v[0] != "r" || v.len() < 2 || v[1] != "0") && line != "r" {
-            panic!("Invalid line input");
-        }
-        
-        if v.len() > 2 {
-            let mut latest_action = "";
-            let mut previous_invested = 0;
-            let mut oop_invested = 0;
-            let mut ip_invested = 0;
-            let mut current_node = &self.children[0].children[0];
-            for action in &v[2..] {
-                if action.contains("b") {
-                    let mut sizing: u32 = action[1..].parse().unwrap();
-                    sizing -= previous_invested;
-                    let action_lookup = if latest_action.contains("b") {
-                        ActionType::Raise{sizing}
-                    } else {
-                        ActionType::Bet(sizing)
-                    };
-                    match &current_node.node_type {
-                        NodeType::ActionNode(node_info) => {
-                            let mut action_num = -1;
-                            
-                            for (i,action_node) in node_info.actions.iter().enumerate() {
-                                if *action_node == action_lookup {
-                                    current_node = &current_node.children[i as usize];
-                                    action_num = i as i64;
-                                }
-                            }
-                            
-                            if action_num == -1 {
-                                //todo: better error handling
-                                panic!("Couldn't find line");
-                            } else {
-                                if node_info.oop == oop {
-                                    let average_strategy = node_info.get_average_strategy();
-                                    let mut counter = 0;
-                                    average_strategy.chunks(node_info.actions_num).for_each(|slice| {
-                                        let action_freq = slice[action_num as usize];
-                                        final_range[**player_range_mapping.get(&(player_range[counter].0, player_range[counter].1)).unwrap() as usize] *= action_freq;
-                                        counter += 1;
-                                    });
-                                }
-                            }
-                            
-                            if node_info.oop == true {
-                                oop_invested = sizing + previous_invested;
-                            } else {
-                                ip_invested = sizing + previous_invested;
-                            }
-                        },
-                        _ => panic!("Couldn't find root action node"),
-                    };
-                } else if action == &"c" {
-                    // check if call or check, by checking latest action
-                    let latest_sizing = if latest_action.contains("b") {
-                        let mut sizing: u32 = latest_action[1..].parse().unwrap();
-                        sizing -= previous_invested;
-                        sizing
-                    } else {
-                        0
-                    };
-                    let action_lookup = if latest_action.contains("b") {
-                        ActionType::Call
-                    } else {
-                        ActionType::Check
-                    };
-                    
-                    match &current_node.node_type {
-                        NodeType::ActionNode(node_info) => {
-                            let mut action_num = -1;
-                            
-                            for (i,action_node) in node_info.actions.iter().enumerate() {
-                                if *action_node == action_lookup {
-                                    current_node = &current_node.children[i as usize];
-                                    action_num = i as i64;
-                                }
-                            }
-                            
-                            if action_num == -1 {
-                                //todo: better error handling
-                                panic!("Couldn't find line");
-                            } else {
-                                if node_info.oop == oop {
-                                    let average_strategy = node_info.get_average_strategy();
-                                    let mut counter = 0;
-                                    average_strategy.chunks(node_info.actions_num).for_each(|slice| {
-                                        let action_freq = slice[action_num as usize];
-                                        final_range[**player_range_mapping.get(&(player_range[counter].0, player_range[counter].1)).unwrap() as usize] *= action_freq;
-                                        counter += 1;
-                                    });
-                                }
-                            }
-                            
-                            if node_info.oop == true {
-                                oop_invested = latest_sizing + previous_invested;
-                            } else {
-                                ip_invested = latest_sizing + previous_invested;
-                            }
-                        },
-                        _ => panic!("Couldn't find root action node"),
-                    };
-                    previous_invested += latest_sizing;
-                } else if action == &"f" {
-                    let action_lookup = ActionType::Fold;
-                    match &current_node.node_type {
-                        NodeType::ActionNode(node_info) => {
-                            let mut action_num = -1;
-                            
-                            for (i,action_node) in node_info.actions.iter().enumerate() {
-                                if *action_node == action_lookup {
-                                    current_node = &current_node.children[i as usize];
-                                    action_num = i as i64;
-                                }
-                            }
-                            
-                            if action_num == -1 {
-                                //todo: better error handling
-                                panic!("Couldn't find line");
-                            } else {
-                                if node_info.oop == oop {
-                                    let average_strategy = node_info.get_average_strategy();
-                                    let mut counter = 0;
-                                    average_strategy.chunks(node_info.actions_num).for_each(|slice| {
-                                        let action_freq = slice[action_num as usize];
-                                        final_range[**player_range_mapping.get(&(player_range[counter].0, player_range[counter].1)).unwrap() as usize] *= action_freq;
-                                        counter += 1;
-                                    });
-                                }
-                            }
-                        },
-                        _ => panic!("Couldn't find root action node"),
-                    };
-                } else {
-                    // todo: error handling for invalid input cards
-                    let mut new_board = current_board.clone();
-                    let rank = action.chars().next().unwrap();
-                    let suit = action.chars().nth(1).unwrap();
-                    new_board.push(rank);
-                    new_board.push(suit);
-                    let new_board_mask = get_card_mask(&new_board);
-                    let old_board_mask = if range_manager.initial_board.len() == 6 && current_board.len() == 8 {
-                        Some(get_card_mask(&current_board))
-                    } else {
-                        None
-                    };
-                    for (i, child) in current_node.children.iter().enumerate() {
-                        let child_id = match child.node_type {
-                            NodeType::ChanceNodeCard((new, old)) => {
-                                if new == new_board_mask && old == old_board_mask {
-                                    Some(i)
-                                } else {
-                                    None
-                                }
-                            },
-                            _ => None,
-                        };
-                        
-                        if let Some(x) = child_id {
-                            current_node = &current_node.children[x].children[0];
-                            break;
-                        }
-                    }
-                    player_range = &range_manager.get_range(oop, new_board_mask, old_board_mask).hands;
-                    for hand in player_range {
-                        //todo: remove hands from final_range which are not impossible due to blockers?
-                        let hand_idx_temp = hand_order_mapping.get(&hand.to_string());
-                        let hand_reversed = format!("{}{}", &hand.to_string()[2..], &hand.to_string()[0..2]);
-                        let hand_idx = match hand_idx_temp {
-                            Some(x) => x,
-                            None => {
-                                hand_order_mapping.get(&hand_reversed).unwrap()
-                            },
-                        };
-                        player_range_mapping.insert((hand.0, hand.1), hand_idx);
-                    }
-                    current_board = new_board;
-                }
-                latest_action = action;
+
+        self.walk_line(&line, range_manager, |node_info, action_num, board| {
+            if node_info.oop != oop {
+                return;
             }
-        }
-        
+            //todo: remove hands from final_range which are impossible due to blockers?
+            let key = range_key(range_manager, board);
+            let player_range = &range_manager.get_range(oop, key.0, key.1).hands;
+            let average_strategy = node_info.get_average_strategy();
+            for (hand, action_freqs) in player_range.iter().zip(average_strategy.chunks(node_info.actions_num)) {
+                final_range[hand_order_index(hand, hand_order_mapping)] *= action_freqs[action_num];
+            }
+        });
+
         final_range
     }
 }
@@ -749,454 +436,213 @@ pub enum ActionType {
     Raise{sizing: u32},
 }
 
+/// Converts PIO style lines into the bet sizes available after each action sequence. A line lists
+/// the chips each player has invested in total after every action, e.g. "0 94 260 260" is
+/// check, bet 94, raise to 260, call. Sequences are keyed like "r:x:b94:R260".
 pub fn get_sizings(lines: Vec<Vec<u32>>) -> HashMap<String, Vec<ActionType>> {
-    let mut sizing_mapping = HashMap::new();
-    
+    let mut sizing_mapping: HashMap<String, Vec<ActionType>> = HashMap::new();
+
     for line in lines.iter() {
-        let mut latest_action = 0;
+        let mut latest_invested = 0;
+        let mut previous_invested = 0; // invested before the current street
         let mut node_line = "r".to_string();
-        let mut previous_invested = 0;
-        
-        for (i,action) in line.iter().enumerate() {
-            if i == 0 && action != &0 {
-                sizing_mapping
-                    .entry(node_line.clone())
-                    .or_insert(Vec::new())
-                    .push(ActionType::Bet(*action));
-                node_line.push_str(format!(":b{}",*action).as_str());
-            } else if i != 0 && action != &0 {
-                if latest_action != *action {
-                    let new_sizing = *action - previous_invested;
-                    let v: &str = node_line.as_str().split(':').collect::<Vec<&str>>().last().unwrap();
-                    
-                    if v.contains("b") == false && v.contains("R") == false {
-                        sizing_mapping
-                            .entry(node_line.clone())
-                            .or_insert(Vec::new())
-                            .push(ActionType::Bet(new_sizing));
-                        node_line.push_str(format!(":b{}",new_sizing).as_str());
-                    } else {
-                        sizing_mapping
-                            .entry(node_line.clone())
-                            .or_insert(Vec::new())
-                            .push(ActionType::Raise{sizing: new_sizing});
-                        node_line.push_str(format!(":R{}",new_sizing).as_str());
-                    }
+
+        for &invested in line.iter() {
+            let last_action = node_line.rsplit(':').next().unwrap();
+            let facing_bet = last_action.contains('b') || last_action.contains('R');
+
+            if invested == latest_invested {
+                if invested != 0 && facing_bet {
+                    node_line.push_str(":c");
+                    previous_invested = invested;
                 } else {
-                    let v: &str = node_line.as_str().split(':').collect::<Vec<&str>>().last().unwrap();
-                    if v.contains("x") || v.contains("c") {
-                        node_line.push_str(":x");
-                    } else {
-                        node_line.push_str(":c");
-                        previous_invested = *action;
-                    }
-                    
+                    node_line.push_str(":x");
                 }
-            } else if latest_action == 0 {
-                node_line.push_str(":x");
+            } else if invested != 0 {
+                let sizing = invested - previous_invested;
+                let action = if facing_bet {
+                    ActionType::Raise{sizing}
+                } else {
+                    ActionType::Bet(sizing)
+                };
+                let sizings = sizing_mapping.entry(node_line.clone()).or_default();
+                if !sizings.contains(&action) {
+                    sizings.push(action);
+                }
+                node_line.push_str(&match action {
+                    ActionType::Raise{sizing} => format!(":R{}", sizing),
+                    _ => format!(":b{}", sizing),
+                });
             }
-            
-            latest_action = *action;
+
+            latest_invested = invested;
         }
     }
-    
-    for (key,value) in sizing_mapping.iter_mut() {
-        value.dedup();
-    }
-    
+
     sizing_mapping
 }
 
-pub fn recursive_build(latest_action: Option<ActionType>, sizing_mapping: &HashMap<String, Vec<ActionType>>, action_line: &String, current_node: &mut Node, range_manager: &RangeManager, current_board: &String) {
-    match &current_node.node_type {
-        NodeType::ChanceNode(_) => {
-            match latest_action  {
-                Some(_) => {
-                    if current_board.len() == 6 {
-                        // Flop, add new turn cards
-                        let board_mask = get_card_mask(current_board);
-                        for card in range_manager.get_board_deck(board_mask).iter() {
-                            let rank = RANK_TO_CHAR[usize::from(card >> 2)];
-                            let suit = SUIT_TO_CHAR[usize::from(card & 3)];
-                            let mut new_board = current_board.clone();
-                            new_board.push(rank);
-                            new_board.push(suit);
-                            let new_board_mask = get_card_mask(&new_board);
-                            
-                            let new_eff_stack = current_node.chance_start_stack - (current_node.pot_size - current_node.chance_start_pot)/2;
-                            let mut node_new = Node { node_type: NodeType::ChanceNodeCard((new_board_mask, None)), children: vec![], pot_size: current_node.pot_size, chance_start_stack: new_eff_stack, oop_invested: 0, ip_invested: 0, chance_start_pot: current_node.pot_size, oop_num_hands: range_manager.get_num_hands(true, board_mask, None), ip_num_hands: range_manager.get_num_hands(false, board_mask, None) };
-                            recursive_build(None, sizing_mapping, action_line, &mut node_new, range_manager, &new_board);
-                            current_node.children.push(node_new);
-                        }
-                        
-                    } else if current_board.len() == 8 {
-                        let board_mask = get_card_mask(current_board);
-                        for card in range_manager.get_board_deck(board_mask).iter() {
-                            let rank = RANK_TO_CHAR[usize::from(card >> 2)];
-                            let suit = SUIT_TO_CHAR[usize::from(card & 3)];
-                            let mut new_board = current_board.clone();
-                            new_board.push(rank);
-                            new_board.push(suit);
-                            let new_board_mask = get_card_mask(&new_board);
-                            
-                            let old_board_mask = if range_manager.initial_board.len() == 6 {
-                                Some(board_mask)
-                            } else {
-                                None
-                            };
-                            
-                            let new_eff_stack = current_node.chance_start_stack - (current_node.pot_size - current_node.chance_start_pot)/2;
-                            let mut node_new = Node { node_type: NodeType::ChanceNodeCard((new_board_mask, old_board_mask)), children: vec![], pot_size: current_node.pot_size, chance_start_stack: new_eff_stack, oop_invested: 0, ip_invested: 0, chance_start_pot: current_node.pot_size, oop_num_hands: range_manager.get_num_hands(true, new_board_mask, old_board_mask), ip_num_hands: range_manager.get_num_hands(false, new_board_mask, old_board_mask) };
-                            recursive_build(None, sizing_mapping, action_line, &mut node_new, range_manager, &new_board);
-                            current_node.children.push(node_new);
-                        }
-                    } else {
-                        panic!("Current board must be either length of flop or turn");
-                    }
-                },
-                None => {
-                        let board_mask = get_card_mask(current_board);
-                        let mut node_new = Node { node_type: NodeType::ChanceNodeCard((board_mask, None)), children: vec![], pot_size: current_node.pot_size, chance_start_stack: current_node.chance_start_stack, oop_invested: 0, ip_invested: 0, chance_start_pot: current_node.chance_start_pot, oop_num_hands: range_manager.get_num_hands(true, board_mask, None), ip_num_hands: range_manager.get_num_hands(false, board_mask, None) };
-                        let current_line = "r".to_string();
-                        recursive_build(None, sizing_mapping, &current_line, &mut node_new, range_manager, current_board);
-                        current_node.children.push(node_new);
-                }
-            };
-        },
-        NodeType::ChanceNodeCard(_) => {
-            let mut actions_new = vec![ActionType::Check];
-            match sizing_mapping.get(&action_line.to_owned()) {
-                Some(action_sizings) => {
-                    for sizing in action_sizings {
-                        actions_new.push(*sizing);
-                    }
-                },
-                None => (),
-            };
-            
-            let board_mask = get_card_mask(current_board);
-            let old_board_mask = if range_manager.initial_board.len() == 6 && current_board.len() == 10 {
-                let turn_board = &current_board[0..8];
-                Some(get_card_mask(&turn_board))
-            } else {
-                None
-            };
-            
-            actions_new.dedup();
-            let mut node_new = Node { node_type: NodeType::ActionNode(ActionNodeInfo::new(true, actions_new, range_manager.get_num_hands(true, board_mask, old_board_mask))), children: vec![], pot_size: current_node.pot_size, chance_start_stack: current_node.chance_start_stack, oop_invested: 0, ip_invested: 0, chance_start_pot: current_node.chance_start_pot, oop_num_hands: range_manager.get_num_hands(true, board_mask, old_board_mask), ip_num_hands: range_manager.get_num_hands(false, board_mask, old_board_mask) };
-            
-            recursive_build(None, sizing_mapping, action_line, &mut node_new, range_manager, current_board);
-            current_node.children.push(node_new);
-        },
-        NodeType::TerminalNode(_) => {
-        },
-        NodeType::ActionNode(node_info) => {
-            let oop = node_info.oop;
-            let actions = &node_info.actions;
-            match latest_action {
-                Some(ActionType::Bet(sizing)) => {
-                    for action in actions {
-                        match action {
-                            ActionType::Fold => {
-                                // Add terminal fold
-                                let eff_pot_size = current_node.pot_size - (sizing - min(current_node.oop_invested,current_node.ip_invested));
-                                let board_mask = get_card_mask(current_board);
-                                let old_board_mask = if range_manager.initial_board.len() == 6 && current_board.len() == 10 {
-                                    let turn_board = &current_board[0..8];
-                                    Some(get_card_mask(&turn_board))
-                                } else {
-                                    None
-                                };
+fn with_sizings(mut actions: Vec<ActionType>, sizing_mapping: &HashMap<String, Vec<ActionType>>, action_line: &str) -> Vec<ActionType> {
+    if let Some(sizings) = sizing_mapping.get(action_line) {
+        actions.extend_from_slice(sizings);
+    }
+    actions
+}
 
-                                let mut node_new = Node { node_type: NodeType::TerminalNode(TerminalType::TerminalFold(oop)), children: vec![], pot_size: eff_pot_size, chance_start_stack: current_node.chance_start_stack, oop_invested: 0, ip_invested: 0, chance_start_pot: current_node.chance_start_pot, oop_num_hands: range_manager.get_num_hands(true, board_mask, old_board_mask), ip_num_hands: range_manager.get_num_hands(false, board_mask, old_board_mask) };
-                                recursive_build(Some(*action), sizing_mapping, action_line, &mut node_new, range_manager, current_board);
-                                current_node.children.push(node_new);
-                            },
-                            ActionType::Call => {
-                                // Add terminal call, or next street if turn/river
-                                let eff_pot_size = current_node.pot_size + (sizing - min(current_node.oop_invested,current_node.ip_invested));
-                                let node_type_new = if current_board.len() == 10 {
-                                    NodeType::TerminalNode(TerminalType::TerminalShowdown)
-                                } else {
-                                    NodeType::ChanceNode((range_manager.get_board_deck(get_card_mask(current_board)).len() - 4).try_into().unwrap())
-                                };
-                                
-                                let board_mask = get_card_mask(current_board);
-                                let old_board_mask = if range_manager.initial_board.len() == 6 && current_board.len() == 10 {
-                                    let turn_board = &current_board[0..8];
-                                    Some(get_card_mask(&turn_board))
-                                } else {
-                                    None
-                                };
-                                let action_line = format!("{}:c",action_line);
-                                let mut node_new = Node { node_type: node_type_new, children: vec![], pot_size: eff_pot_size, chance_start_stack: current_node.chance_start_stack, oop_invested: 0, ip_invested: 0, chance_start_pot: current_node.chance_start_pot, oop_num_hands: range_manager.get_num_hands(true, board_mask, old_board_mask), ip_num_hands: range_manager.get_num_hands(false, board_mask, old_board_mask) };
-                                
-                                recursive_build(Some(*action), sizing_mapping, &action_line, &mut node_new, range_manager, current_board);
-                                current_node.children.push(node_new);
-                            },
-                            ActionType::Raise{sizing: action_sizing} => {
-                                // Add actions accordingly for opponent, and new action node for him
-                                let call_amount = sizing - min(current_node.oop_invested,current_node.ip_invested);
-                                let pot_size_new = current_node.pot_size + (action_sizing - sizing) + call_amount;
-                                let eff_stack_new = current_node.chance_start_stack - (action_sizing - sizing);
-                                let mut oop_new = oop;
-                                oop_new ^= true;
-                                let mut actions_new = vec![ActionType::Fold, ActionType::Call];
-                                let action_line = format!("{}:R{}",action_line,action_sizing);
-                                
-                                if eff_stack_new != 0 {
-                                    
-                                    match sizing_mapping.get(&action_line.to_owned()) {
-                                        Some(action_sizings) => {
-                                            for sizing in action_sizings {
-                                                actions_new.push(*sizing);
-                                            }
-                                        },
-                                        None => (),
-                                    };
-                                }
-                                
-                                let oop_invested_new = if oop {
-                                    *action_sizing
-                                } else {
-                                    current_node.oop_invested
-                                };
-                                
-                                let ip_invested_new = if !oop {
-                                    *action_sizing
-                                } else {
-                                    current_node.ip_invested
-                                };
-                                
-                                let board_mask = get_card_mask(current_board);
-                                let old_board_mask = if range_manager.initial_board.len() == 6 && current_board.len() == 10 {
-                                    let turn_board = &current_board[0..8];
-                                    Some(get_card_mask(&turn_board))
-                                } else {
-                                    None
-                                };
-                                
-                                let mut node_new = Node { node_type: NodeType::ActionNode(ActionNodeInfo::new(oop_new, actions_new, range_manager.get_num_hands(oop_new, board_mask, old_board_mask))), children: vec![], pot_size: pot_size_new, chance_start_stack: current_node.chance_start_stack, oop_invested: oop_invested_new, ip_invested: ip_invested_new, chance_start_pot: current_node.chance_start_pot, oop_num_hands: range_manager.get_num_hands(true, board_mask, old_board_mask), ip_num_hands: range_manager.get_num_hands(false, board_mask, old_board_mask) };
-                                
-                                recursive_build(Some(*action), sizing_mapping, &action_line, &mut node_new, range_manager, current_board);
-                                current_node.children.push(node_new);
-                                
-                            },
-                            _ => panic!("Illegal action: Line: {} Current Action {:?}", action_line, action),
-                        }
-                    }
-                    
-                    
-                },
-                Some(ActionType::Check) => {
-                    for action in actions {
-                        match action {
-                            ActionType::Check => { // XX line - terminal showdown (or to next chance node)
-                                let node_type_new = if current_board.len() == 10 {
-                                    NodeType::TerminalNode(TerminalType::TerminalShowdown)
-                                } else {
-                                    NodeType::ChanceNode((range_manager.get_board_deck(get_card_mask(current_board)).len() - 4).try_into().unwrap())
-                                };
-                                let board_mask = get_card_mask(current_board);
-                                let old_board_mask = if range_manager.initial_board.len() == 6 && current_board.len() == 10 {
-                                    let turn_board = &current_board[0..8];
-                                    Some(get_card_mask(&turn_board))
-                                } else {
-                                    None
-                                };
-                                let action_line = format!("{}:x",action_line);
-                                let mut node_new = Node { node_type: node_type_new, children: vec![], pot_size: current_node.pot_size, chance_start_stack: current_node.chance_start_stack, oop_invested: 0, ip_invested: 0, chance_start_pot: current_node.chance_start_pot, oop_num_hands: range_manager.get_num_hands(true, board_mask, old_board_mask), ip_num_hands: range_manager.get_num_hands(false, board_mask, old_board_mask) };
-                                recursive_build(Some(*action), sizing_mapping, &action_line, &mut node_new, range_manager, current_board);
-                                current_node.children.push(node_new);
-                            },
-                            ActionType::Bet(sizing) => { // XB line - add action node for OOP
-                                let eff_stack_new = current_node.chance_start_stack - sizing;
-                                let pot_size_new = current_node.pot_size + sizing;
-                                let action_line = format!("{}:b{}",action_line,*sizing);
-                                
-                                let mut actions_new = vec![ActionType::Fold, ActionType::Call];
-                                if eff_stack_new != 0 {                           
-                                    match sizing_mapping.get(&action_line.to_owned()) {
-                                        Some(action_sizings) => {
-                                            for sizing in action_sizings {
-                                                actions_new.push(*sizing);
-                                            }
-                                        },
-                                        None => (),
-                                    };
-                                }
-                                
-                                let board_mask = get_card_mask(current_board);
-                                let old_board_mask = if range_manager.initial_board.len() == 6 && current_board.len() == 10 {
-                                    let turn_board = &current_board[0..8];
-                                    Some(get_card_mask(&turn_board))
-                                } else {
-                                    None
-                                };
-                                
-                                let mut node_new = Node { node_type: NodeType::ActionNode(ActionNodeInfo::new(true, actions_new, range_manager.get_num_hands(true, board_mask, old_board_mask))), children: vec![], pot_size: pot_size_new, chance_start_stack: current_node.chance_start_stack, oop_invested: 0, ip_invested: *sizing, chance_start_pot: current_node.chance_start_pot, oop_num_hands: range_manager.get_num_hands(true, board_mask, old_board_mask), ip_num_hands: range_manager.get_num_hands(false, board_mask, old_board_mask) };
-                                recursive_build(Some(*action), sizing_mapping, &action_line, &mut node_new, range_manager, current_board);
-                                current_node.children.push(node_new);
-                            }
-                            _ => panic!("Illegal action"),
-                        }
-                    }
-                    
-                },
-                Some(ActionType::Raise{sizing}) => { 
-                    // Look at our actions, create new nodes accordingly...
-                    for action in actions {
-                        match action {
-                            ActionType::Fold => {
-                                let eff_pot_size = current_node.pot_size - (sizing - min(current_node.oop_invested, current_node.ip_invested));
-                                let board_mask = get_card_mask(current_board);
-                                let old_board_mask = if range_manager.initial_board.len() == 6 && current_board.len() == 10 {
-                                    let turn_board = &current_board[0..8];
-                                    Some(get_card_mask(&turn_board))
-                                } else {
-                                    None
-                                };
-                                let mut node_new = Node { node_type: NodeType::TerminalNode(TerminalType::TerminalFold(oop)), children: vec![], pot_size: eff_pot_size, chance_start_stack: current_node.chance_start_stack, oop_invested: 0, ip_invested: 0, chance_start_pot: current_node.chance_start_pot, oop_num_hands: range_manager.get_num_hands(true, board_mask, old_board_mask), ip_num_hands: range_manager.get_num_hands(false, board_mask, old_board_mask) };
-                                recursive_build(Some(*action), sizing_mapping, &action_line, &mut node_new, range_manager, current_board);
-                                current_node.children.push(node_new);
-                            },
-                            ActionType::Call => {
-                                let node_type_new = if current_board.len() == 10 {
-                                    NodeType::TerminalNode(TerminalType::TerminalShowdown)
-                                } else {
-                                    NodeType::ChanceNode((range_manager.get_board_deck(get_card_mask(current_board)).len() - 4).try_into().unwrap())
-                                };
-                                let board_mask = get_card_mask(current_board);
-                                let old_board_mask = if range_manager.initial_board.len() == 6 && current_board.len() == 10 {
-                                    let turn_board = &current_board[0..8];
-                                    Some(get_card_mask(&turn_board))
-                                } else {
-                                    None
-                                };
-                                let action_line = format!("{}:c",action_line);
-                                let eff_pot_size = current_node.pot_size + (sizing - min(current_node.oop_invested, current_node.ip_invested));
-                                let mut node_new = Node { node_type: node_type_new, children: vec![], pot_size: eff_pot_size, chance_start_stack: current_node.chance_start_stack, oop_invested: 0, ip_invested: 0, chance_start_pot: current_node.chance_start_pot, oop_num_hands: range_manager.get_num_hands(true, board_mask, old_board_mask), ip_num_hands: range_manager.get_num_hands(false, board_mask, old_board_mask) };
-                                recursive_build(Some(*action), sizing_mapping, &action_line, &mut node_new, range_manager, current_board);
-                                current_node.children.push(node_new);
-                            },
-                            ActionType::Raise{sizing: action_sizing} => {
-                                let player_invested = match oop {
-                                    true => current_node.oop_invested,
-                                    false => current_node.ip_invested,
-                                };
-                                
-                                let pot_size_new = current_node.pot_size + action_sizing - player_invested;
-                                
-                                let eff_stack_new = current_node.chance_start_stack - action_sizing;
-                                let mut oop_new = oop;
-                                oop_new ^= true;
-                                let action_line = format!("{}:R{}",action_line,*action_sizing);
-                                let mut actions_new = vec![ActionType::Fold, ActionType::Call];
-                                
-                                if eff_stack_new != 0 {
-                                   match sizing_mapping.get(&action_line.to_owned()) {
-                                        Some(action_sizings) => {
-                                            for sizing in action_sizings {
-                                                actions_new.push(*sizing);
-                                            }
-                                        },
-                                        None => (),
-                                    };
-                                }
-                                
-                                let oop_invested_new = if oop {
-                                    *action_sizing
-                                } else {
-                                    current_node.oop_invested
-                                };
-                                
-                                let ip_invested_new = if !oop {
-                                    *action_sizing
-                                } else {
-                                    current_node.ip_invested
-                                };
-                                
-                                let board_mask = get_card_mask(current_board);
-                                let old_board_mask = if range_manager.initial_board.len() == 6 && current_board.len() == 10 {
-                                    let turn_board = &current_board[0..8];
-                                    Some(get_card_mask(&turn_board))
-                                } else {
-                                    None
-                                };
-                                
-                                let mut node_new = Node { node_type: NodeType::ActionNode(ActionNodeInfo::new(oop_new, actions_new, range_manager.get_num_hands(oop_new, board_mask, old_board_mask))), children: vec![], pot_size: pot_size_new, chance_start_stack: current_node.chance_start_stack, oop_invested: oop_invested_new, ip_invested: ip_invested_new, chance_start_pot: current_node.chance_start_pot, oop_num_hands: range_manager.get_num_hands(true, board_mask, old_board_mask), ip_num_hands: range_manager.get_num_hands(false, board_mask, old_board_mask) };
-                                recursive_build(Some(*action), sizing_mapping, &action_line, &mut node_new, range_manager, current_board);
-                                current_node.children.push(node_new);
-                            },
-                            _ => panic!("Illegal action"),
-                        }
-                    }
-                    
-                },
-                None => { // OOP's first decision
-                    for action in actions {
-                        match action {
-                            ActionType::Check => {
-                                let mut actions_new = vec![ActionType::Check];
-                
-                                
-                                match sizing_mapping.get(&action_line.to_owned()) {
-                                    Some(action_sizings) => {
-                                        for sizing in action_sizings {
-                                            actions_new.push(*sizing);
-                                        }
-                                    },
-                                    None => (),
-                                };
-                               
-                                
-                                let board_mask = get_card_mask(current_board);
-                                let old_board_mask = if range_manager.initial_board.len() == 6 && current_board.len() == 10 {
-                                    let turn_board = &current_board[0..8];
-                                    Some(get_card_mask(&turn_board))
-                                } else {
-                                    None
-                                };
-                                let action_line = format!("{}:x",action_line);
-                                let mut node_new = Node { node_type: NodeType::ActionNode(ActionNodeInfo::new(false, actions_new, range_manager.get_num_hands(false, board_mask, old_board_mask))), children: vec![], pot_size: current_node.pot_size, chance_start_stack: current_node.chance_start_stack, oop_invested: 0, ip_invested: 0, chance_start_pot: current_node.chance_start_pot, oop_num_hands: range_manager.get_num_hands(true, board_mask, old_board_mask), ip_num_hands: range_manager.get_num_hands(false, board_mask, old_board_mask)};
-                                recursive_build(Some(*action), sizing_mapping, &action_line, &mut node_new, range_manager, current_board);
-                                current_node.children.push(node_new);
-                            },
-                            ActionType::Bet(sizing) => {
-                                let eff_stack_new = current_node.chance_start_stack - sizing;
-                                let pot_size_new = current_node.pot_size + sizing;
-                                let action_line = format!("{}:b{}",action_line,*sizing);
-                                let mut actions_new = vec![ActionType::Fold, ActionType::Call];
-                                if eff_stack_new != 0 {                           
-                                    match sizing_mapping.get(&action_line.to_owned()) {
-                                        Some(action_sizings) => {
-                                            for sizing in action_sizings {
-                                                actions_new.push(*sizing);
-                                            }
-                                        },
-                                        None => (),
-                                    };
-                                }
-                                
-                                let board_mask = get_card_mask(current_board);
-                                let old_board_mask = if range_manager.initial_board.len() == 6 && current_board.len() == 10 {
-                                    let turn_board = &current_board[0..8];
-                                    Some(get_card_mask(&turn_board))
-                                } else {
-                                    None
-                                };
-                                
-                                let mut node_new = Node { node_type: NodeType::ActionNode(ActionNodeInfo::new(false, actions_new, range_manager.get_num_hands(false, board_mask, old_board_mask))), children: vec![], pot_size: pot_size_new, chance_start_stack: current_node.chance_start_stack, oop_invested: *sizing, ip_invested: 0, chance_start_pot: current_node.chance_start_pot, oop_num_hands: range_manager.get_num_hands(true, board_mask, old_board_mask), ip_num_hands: range_manager.get_num_hands(false, board_mask, old_board_mask) };
-                                recursive_build(Some(*action), sizing_mapping, &action_line, &mut node_new, range_manager, current_board);
-                                current_node.children.push(node_new);
-                            },
-                            _ => panic!("OOP made impossible first decision"),
-                        }
-                    }
-                },
-                //change this
-                Some(_) => panic!("Invalid action"),
+/// Node that follows once betting on the current street is closed
+fn street_end(range_manager: &RangeManager, board: &str) -> NodeType {
+    if board.len() == 10 {
+        NodeType::TerminalNode(TerminalType::TerminalShowdown)
+    } else {
+        NodeType::ChanceNode((range_manager.get_board_deck(get_card_mask(board)).len() - 4).try_into().unwrap())
+    }
+}
+
+/// Builds the game tree below `root` from the bet sizes in `sizing_mapping`
+pub fn build_tree(root: &mut Node, sizing_mapping: &HashMap<String, Vec<ActionType>>, range_manager: &RangeManager) {
+    let board = &range_manager.initial_board;
+    let key = range_key(range_manager, board);
+    let mut card_node = root.new_child(NodeType::ChanceNodeCard(key), root.pot_size, 0, 0, range_manager, key);
+    recursive_build(sizing_mapping, "r", &mut card_node, range_manager, board);
+    root.children.push(card_node);
+}
+
+fn recursive_build(sizing_mapping: &HashMap<String, Vec<ActionType>>, action_line: &str, current_node: &mut Node, range_manager: &RangeManager, current_board: &str) {
+    match &current_node.node_type {
+        NodeType::TerminalNode(_) => (),
+        NodeType::ChanceNode(_) => {
+            // Deal the next street
+            if current_board.len() != 6 && current_board.len() != 8 {
+                panic!("Current board must be either length of flop or turn");
+            }
+            let chance_start_stack = current_node.chance_start_stack - (current_node.pot_size - current_node.chance_start_pot)/2;
+            for &card in range_manager.get_board_deck(get_card_mask(current_board)) {
+                let new_board = format!("{}{}", current_board, mask_to_string(1u64 << card));
+                let key = range_key(range_manager, &new_board);
+                let mut card_node = Node {
+                    node_type: NodeType::ChanceNodeCard(key),
+                    children: vec![],
+                    pot_size: current_node.pot_size,
+                    chance_start_stack,
+                    oop_invested: 0,
+                    ip_invested: 0,
+                    chance_start_pot: current_node.pot_size,
+                    oop_num_hands: range_manager.get_num_hands(true, key.0, key.1),
+                    ip_num_hands: range_manager.get_num_hands(false, key.0, key.1),
+                };
+                recursive_build(sizing_mapping, action_line, &mut card_node, range_manager, &new_board);
+                current_node.children.push(card_node);
             }
         },
+        NodeType::ChanceNodeCard(_) => {
+            // OOP opens the street
+            let key = range_key(range_manager, current_board);
+            let actions = with_sizings(vec![ActionType::Check], sizing_mapping, action_line);
+            let node_info = ActionNodeInfo::new(true, actions, range_manager.get_num_hands(true, key.0, key.1));
+            let mut child = current_node.new_child(NodeType::ActionNode(node_info), current_node.pot_size, 0, 0, range_manager, key);
+            recursive_build(sizing_mapping, action_line, &mut child, range_manager, current_board);
+            current_node.children.push(child);
+        },
+        NodeType::ActionNode(node_info) => {
+            let key = range_key(range_manager, current_board);
+            let oop = node_info.oop;
+            // Size of the bet (or raise) the acting player is facing
+            let facing = current_node.oop_invested.abs_diff(current_node.ip_invested);
+            let mut children = Vec::with_capacity(node_info.actions.len());
+
+            for &action in &node_info.actions {
+                let (child_line, node_type, pot_size, oop_invested, ip_invested) = match action {
+                    ActionType::Fold => {
+                        (action_line.to_string(), NodeType::TerminalNode(TerminalType::TerminalFold(oop)), current_node.pot_size - facing, 0, 0)
+                    },
+                    ActionType::Check if oop => {
+                        // IP acts after OOP checks
+                        let child_line = format!("{}:x", action_line);
+                        let actions = with_sizings(vec![ActionType::Check], sizing_mapping, &child_line);
+                        let node_info = ActionNodeInfo::new(false, actions, range_manager.get_num_hands(false, key.0, key.1));
+                        (child_line, NodeType::ActionNode(node_info), current_node.pot_size, 0, 0)
+                    },
+                    ActionType::Check => {
+                        (format!("{}:x", action_line), street_end(range_manager, current_board), current_node.pot_size, 0, 0)
+                    },
+                    ActionType::Call => {
+                        (format!("{}:c", action_line), street_end(range_manager, current_board), current_node.pot_size + facing, 0, 0)
+                    },
+                    ActionType::Bet(sizing) | ActionType::Raise{sizing} => {
+                        let child_line = match action {
+                            ActionType::Bet(_) => format!("{}:b{}", action_line, sizing),
+                            _ => format!("{}:R{}", action_line, sizing),
+                        };
+                        let mut actions = vec![ActionType::Fold, ActionType::Call];
+                        if sizing != current_node.chance_start_stack {
+                            // not all-in, so re-raises are possible
+                            actions = with_sizings(actions, sizing_mapping, &child_line);
+                        }
+                        let node_info = ActionNodeInfo::new(!oop, actions, range_manager.get_num_hands(!oop, key.0, key.1));
+                        let (oop_invested, ip_invested, player_invested) = if oop {
+                            (sizing, current_node.ip_invested, current_node.oop_invested)
+                        } else {
+                            (current_node.oop_invested, sizing, current_node.ip_invested)
+                        };
+                        (child_line, NodeType::ActionNode(node_info), current_node.pot_size + sizing - player_invested, oop_invested, ip_invested)
+                    },
+                };
+
+                let mut child = current_node.new_child(node_type, pot_size, oop_invested, ip_invested, range_manager, key);
+                recursive_build(sizing_mapping, &child_line, &mut child, range_manager, current_board);
+                children.push(child);
+            }
+
+            current_node.children = children;
+        },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::hand_range::HandRange;
+
+    fn actions(node: &Node) -> &Vec<ActionType> {
+        match &node.node_type {
+            NodeType::ActionNode(node_info) => &node_info.actions,
+            _ => panic!("not an action node"),
+        }
+    }
+
+    #[test]
+    fn sizings_from_lines() {
+        let sizings = get_sizings(vec![vec![0, 0], vec![94, 260, 260], vec![94, 94], vec![0, 50, 50], vec![0, 0, 0, 30, 30]]);
+        assert_eq!(sizings["r"], vec![ActionType::Bet(94)]);
+        assert_eq!(sizings["r:b94"], vec![ActionType::Raise{sizing: 260}]);
+        assert_eq!(sizings["r:x"], vec![ActionType::Bet(50)]);
+        // flop checks through, IP bets the turn after OOP checks
+        assert_eq!(sizings["r:x:x:x"], vec![ActionType::Bet(30)]);
+        assert_eq!(sizings.len(), 4);
+    }
+
+    #[test]
+    fn sizings_deduplicated() {
+        let sizings = get_sizings(vec![vec![0, 50, 50], vec![0, 80, 80], vec![0, 50, 150, 150]]);
+        assert_eq!(sizings["r:x"], vec![ActionType::Bet(50), ActionType::Bet(80)]);
+    }
+
+    #[test]
+    fn ip_uses_own_sizes_after_check() {
+        let mut range_manager = RangeManager::new(HandRange::from_string("AA".to_string()), HandRange::from_string("KK".to_string()), "2c7d9sTh3h".to_string());
+        range_manager.initialize_ranges();
+        let mut root = Node::new_root(300, 100, 6, 6);
+        build_tree(&mut root, &get_sizings(vec![vec![0, 0], vec![30, 30], vec![0, 70, 70]]), &range_manager);
+
+        let oop_node = &root.children[0].children[0];
+        assert_eq!(actions(oop_node), &vec![ActionType::Check, ActionType::Bet(30)]);
+        let ip_node = &oop_node.children[0];
+        assert_eq!(actions(ip_node), &vec![ActionType::Check, ActionType::Bet(70)]);
+        // IP bets 70 into 100 and OOP can fold or call
+        let facing_bet = &ip_node.children[1];
+        assert_eq!(actions(facing_bet), &vec![ActionType::Fold, ActionType::Call]);
+        assert_eq!((facing_bet.pot_size, facing_bet.oop_invested, facing_bet.ip_invested), (170, 0, 70));
+        assert_eq!(facing_bet.children[0].pot_size, 100);
+        assert_eq!(facing_bet.children[1].pot_size, 240);
     }
 }
