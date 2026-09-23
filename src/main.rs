@@ -12,8 +12,11 @@ mod best_response;
 mod trainer;
 mod isomorphism;
 mod upi;
+mod cards;
+#[cfg(test)]
+mod ev_tests;
 
-use rust_poker::hand_range::{get_card_mask};
+use crate::cards::get_card_mask;
 
 
 #[global_allocator]

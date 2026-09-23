@@ -1,7 +1,7 @@
 use crate::range::*;
 use crate::postfloptree::*;
-use rust_poker::constants::RANK_TO_CHAR;
-use rust_poker::constants::SUIT_TO_CHAR;
+use crate::cards::RANK_TO_CHAR;
+use crate::cards::SUIT_TO_CHAR;
 use rayon::prelude::*;
 
 pub struct CfrState<'a> {

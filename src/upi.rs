@@ -21,7 +21,7 @@ pub struct CliSession {
     accuracy: Accuracy,
     hand_order: Vec<String>,
     hand_order_map: HashMap<String, usize>,
-    trainer: Option<Trainer>,
+    pub trainer: Option<Trainer>,
 }
 
 fn trim_newline(s: &mut String) {
@@ -58,47 +58,55 @@ impl CliSession {
                 .expect("Cannot read user input");
             trim_newline(&mut user_input);
             
-            if user_input.len() != 0 && user_input.chars().nth(0).unwrap() != '#' {
-                let mut split = user_input.as_str().split(" ");
-                let input_params = split.collect::<Vec<&str>>();
-                match input_params[0] {
-                    "set_end_string" => set_end_string(&input_params, &mut self.end_string),
-                    "set_accuracy" => set_accuracy(&input_params, &mut self.accuracy),
-                    "set_eff_stack" => set_eff_stack(&input_params, &mut self.tree_information),
-                    "set_pot" => set_pot(&input_params, &mut self.tree_information),
-                    "set_board" => set_board(&input_params, &mut self.tree_information),
-                    "show_effective_stack" => {
-                        if let Some(x) = self.tree_information.eff_stack {
-                            println!("{}",x);
-                        } else {
-                            println!("ERROR: {} missing/incorrect tree", input_params[0])
-                        }
-                    },
-                    "show_children" => show_children(&input_params, &self.trainer),
-                    "show_range" => show_range(&input_params, &self.trainer, &self.hand_order_map),
-                    "show_strategy" => show_strategy(&input_params, &self.trainer, &self.hand_order_map),
-                    "calc_line_freq" => calc_line_freq(&input_params, &self.trainer, &self.hand_order_map),
-                    "calc_eq_node" => calc_eq_node(&input_params, &self.trainer),
-                    "calc_ev" => calc_ev(&input_params, &self.trainer),
-                    "show_node" => show_node(&input_params, &self.trainer),
-                    "add_line" => add_line(&input_params, &mut self.tree_information),
-                    "clear_lines" => clear_lines(&mut self.tree_information),
-                    "build_tree" => build_tree(&mut self.tree_information, &mut self.trainer),
-                    "is_ready" => println!("{} ok!", input_params[0]),
-                    "set_isomorphism" => println!("{} ok!", input_params[0]), // TODO: fix this
-                    "set_threads" => println!("{} ok!", input_params[0]), // TODO: fix this
-                    "set_recalc_accuracy" => println!("{} ok!", input_params[0]), // TODO: fix this
-                    "show_hand_order" => println!("{:?}",self.hand_order),
-                    "set_range" => set_range(&input_params, &mut self.tree_information,&self.hand_order),
-                    "go" => go(&input_params, &mut self.trainer, &self.accuracy, &self.end_string),
-                    "exit" => break,
-                    _ => println!("ERROR: Command {} not recognized", input_params[0]),
-                };
-                if self.end_string.len() > 0 && input_params[0] != "go" {
-                    println!("{}",self.end_string);
-                }
+            if !self.run_command(&user_input) {
+                break;
             }
         }
+    }
+
+    // Runs a single UPI command line. Returns false once the session should end.
+    pub fn run_command(&mut self, user_input: &str) -> bool {
+        if user_input.len() != 0 && user_input.chars().nth(0).unwrap() != '#' {
+            let mut split = user_input.split(" ");
+            let input_params = split.collect::<Vec<&str>>();
+            match input_params[0] {
+                "set_end_string" => set_end_string(&input_params, &mut self.end_string),
+                "set_accuracy" => set_accuracy(&input_params, &mut self.accuracy),
+                "set_eff_stack" => set_eff_stack(&input_params, &mut self.tree_information),
+                "set_pot" => set_pot(&input_params, &mut self.tree_information),
+                "set_board" => set_board(&input_params, &mut self.tree_information),
+                "show_effective_stack" => {
+                    if let Some(x) = self.tree_information.eff_stack {
+                        println!("{}",x);
+                    } else {
+                        println!("ERROR: {} missing/incorrect tree", input_params[0])
+                    }
+                },
+                "show_children" => show_children(&input_params, &self.trainer),
+                "show_range" => show_range(&input_params, &self.trainer, &self.hand_order_map),
+                "show_strategy" => show_strategy(&input_params, &self.trainer, &self.hand_order_map),
+                "calc_line_freq" => calc_line_freq(&input_params, &self.trainer, &self.hand_order_map),
+                "calc_eq_node" => calc_eq_node(&input_params, &self.trainer),
+                "calc_ev" => calc_ev(&input_params, &self.trainer),
+                "show_node" => show_node(&input_params, &self.trainer),
+                "add_line" => add_line(&input_params, &mut self.tree_information),
+                "clear_lines" => clear_lines(&mut self.tree_information),
+                "build_tree" => build_tree(&mut self.tree_information, &mut self.trainer),
+                "is_ready" => println!("{} ok!", input_params[0]),
+                "set_isomorphism" => println!("{} ok!", input_params[0]), // TODO: fix this
+                "set_threads" => println!("{} ok!", input_params[0]), // TODO: fix this
+                "set_recalc_accuracy" => println!("{} ok!", input_params[0]), // TODO: fix this
+                "show_hand_order" => println!("{:?}",self.hand_order),
+                "set_range" => set_range(&input_params, &mut self.tree_information,&self.hand_order),
+                "go" => go(&input_params, &mut self.trainer, &self.accuracy, &self.end_string),
+                "exit" => return false,
+                _ => println!("ERROR: Command {} not recognized", input_params[0]),
+            };
+            if self.end_string.len() > 0 && input_params[0] != "go" {
+                println!("{}",self.end_string);
+            }
+        }
+        true
     }
 }
 

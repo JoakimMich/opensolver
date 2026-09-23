@@ -1,7 +1,6 @@
 use crate::range::*;
 use std::cmp::min;
-use rust_poker::constants::*;
-use rust_poker::hand_range::{get_card_mask,mask_to_string};
+use crate::cards::*;
 use std::collections::HashMap;
 use std::fmt;
 
