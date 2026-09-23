@@ -16,13 +16,16 @@ pub enum TerminalType {
     TerminalFold(bool),
 }
 
+/// Regrets and strategy sums are stored action-major ([action][hand]) so that every update is an
+/// element-wise loop over contiguous hands.
 #[derive(Debug)]
 pub struct ActionNodeInfo {
     pub oop: bool,
     pub actions: Vec<ActionType>,
-    pub strategy_sum: Vec<f64>,
-    regret_sum: Vec<f64>,
+    pub strategy_sum: Vec<f32>,
+    regret_sum: Vec<f32>,
     pub actions_num: usize,
+    hands_num: usize,
 }
 
 impl ActionNodeInfo {
@@ -30,68 +33,77 @@ impl ActionNodeInfo {
         let actions_num = actions.len();
         let strategy_sum = vec![0.0; hands_num * actions_num];
         let regret_sum = strategy_sum.clone();
-        
-        ActionNodeInfo { oop, actions, strategy_sum, regret_sum, actions_num }
+
+        ActionNodeInfo { oop, actions, strategy_sum, regret_sum, actions_num, hands_num }
     }
-    
-    pub fn get_current_strategy(&self) -> Vec<f64> {
-        let mut strategy = self.regret_sum.clone();
-        strategy.iter_mut().for_each(|x| *x = x.max(0.0));
-     
-        strategy.chunks_mut(self.actions_num).for_each(|slice| {
-            let hand_sum_regrets: f64 = slice.iter().sum();
-            if hand_sum_regrets > 0.0 {
-                slice.iter_mut().for_each(|x| *x /= hand_sum_regrets);
-            } else {
-                slice.iter_mut().for_each(|x| *x = 1.0/self.actions_num as f64);
+
+    /// Regret matching, action-major ([action][hand])
+    pub fn get_current_strategy(&self) -> Vec<f32> {
+        let hands = self.hands_num;
+        let mut strategy = vec![0.0f32; self.regret_sum.len()];
+        let mut sums = vec![0.0f32; hands];
+
+        for (probs, regrets) in strategy.chunks_exact_mut(hands).zip(self.regret_sum.chunks_exact(hands)) {
+            for ((prob, sum), &regret) in probs.iter_mut().zip(sums.iter_mut()).zip(regrets) {
+                let positive = regret.max(0.0);
+                *prob = positive;
+                *sum += positive;
             }
-        });
-        
+        }
+
+        let uniform = 1.0/self.actions_num as f32;
+        for probs in strategy.chunks_exact_mut(hands) {
+            for (prob, &sum) in probs.iter_mut().zip(&sums) {
+                *prob = if sum > 0.0 { *prob / sum } else { uniform };
+            }
+        }
+
         strategy
     }
-    
-    pub fn update_regret_sum_1(&mut self, action_utilities: &[f64], n_action: usize) {
-        for (regrets, utility) in self.regret_sum.chunks_exact_mut(self.actions_num).zip(action_utilities) {
-            regrets[n_action] += utility;
-        }
-    }
 
-    pub fn update_regret_sum_2(&mut self, action_utilities: &[f64], n_iterations: u64) {
+    /// Adds this iteration's regrets and applies the DCFR discount. `action_results` holds the
+    /// value of every hand for each action ([action][hand]), `node_values` the value of the node.
+    pub fn update_regret_sum(&mut self, action_results: &[f32], node_values: &[f32], n_iterations: u64) {
         let mut x = f64::powf(n_iterations as f64, ALPHA);
         x = x / (x + 1.0);
+        let x = x as f32;
+        let beta = BETA as f32;
+        let hands = self.hands_num;
 
-        for (regrets, utility) in self.regret_sum.chunks_exact_mut(self.actions_num).zip(action_utilities) {
-            for regret in regrets {
-                *regret -= utility;
-                if *regret > 0.0 {
-                    *regret *= x;
-                } else {
-                    *regret *= BETA;
-                }
+        for (regrets, results) in self.regret_sum.chunks_exact_mut(hands).zip(action_results.chunks_exact(hands)) {
+            for ((regret, &result), &node_value) in regrets.iter_mut().zip(results).zip(node_values) {
+                let r = *regret + result - node_value;
+                *regret = r * if r > 0.0 { x } else { beta };
             }
         }
     }
 
-    pub fn update_strategy_sum(&mut self, strategy: &[f64], reach_probs: &[f64], n_iterations: u64 ) {
-        let x = f64::powf(n_iterations as f64 / (n_iterations as f64 + 1.0), GAMMA);
-        let n = self.actions_num;
-        for ((sums, hand_strategy), reach_prob) in self.strategy_sum.chunks_exact_mut(n).zip(strategy.chunks_exact(n)).zip(reach_probs) {
-            for (sum, action_prob) in sums.iter_mut().zip(hand_strategy) {
-                *sum += action_prob * reach_prob;
-                *sum *= x;
+    /// `strategy` is action-major ([action][hand])
+    pub fn update_strategy_sum(&mut self, strategy: &[f32], reach_probs: &[f32], n_iterations: u64 ) {
+        let x = f64::powf(n_iterations as f64 / (n_iterations as f64 + 1.0), GAMMA) as f32;
+        let hands = self.hands_num;
+        for (sums, probs) in self.strategy_sum.chunks_exact_mut(hands).zip(strategy.chunks_exact(hands)) {
+            for ((sum, &prob), &reach_prob) in sums.iter_mut().zip(probs).zip(reach_probs) {
+                *sum = (*sum + prob * reach_prob) * x;
             }
         }
     }
 
+    /// Average strategy, hand-major ([hand][action])
     pub fn get_average_strategy(&self) -> Vec<f64> {
-        let mut average_strategy = self.strategy_sum.clone();
+        let hands = self.hands_num;
+        let n = self.actions_num;
+        let mut totals = vec![0.0f64; hands];
+        for sums in self.strategy_sum.chunks_exact(hands) {
+            for (total, &sum) in totals.iter_mut().zip(sums) {
+                *total += sum as f64;
+            }
+        }
 
-        for hand_strategy in average_strategy.chunks_exact_mut(self.actions_num) {
-            let total: f64 = hand_strategy.iter().sum();
-            if total > 0.0 {
-                hand_strategy.iter_mut().for_each(|x| *x /= total);
-            } else {
-                hand_strategy.iter_mut().for_each(|x| *x = 1.0/self.actions_num as f64);
+        let mut average_strategy = vec![0.0; hands * n];
+        for (i, (hand_strategy, &total)) in average_strategy.chunks_exact_mut(n).zip(&totals).enumerate() {
+            for (j, prob) in hand_strategy.iter_mut().enumerate() {
+                *prob = if total > 0.0 { self.strategy_sum[j * hands + i] as f64 / total } else { 1.0/n as f64 };
             }
         }
 

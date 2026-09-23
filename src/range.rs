@@ -1,5 +1,37 @@
 use crate::cards::{get_card_mask, char_to_rank, char_to_suit};
-use std::collections::HashMap;
+use std::hash::{BuildHasherDefault, Hasher};
+
+/// FxHash: the board keys are trusted u64s, so a multiply-rotate hash is plenty and much faster
+/// than the default SipHash
+#[derive(Default)]
+pub struct FastHasher(u64);
+
+impl Hasher for FastHasher {
+    #[inline]
+    fn write(&mut self, bytes: &[u8]) {
+        for &byte in bytes {
+            self.write_u64(byte as u64);
+        }
+    }
+    #[inline]
+    fn write_u64(&mut self, x: u64) {
+        self.0 = (self.0.rotate_left(5) ^ x).wrapping_mul(0x517cc1b727220a95);
+    }
+    #[inline]
+    fn write_isize(&mut self, x: isize) {
+        self.write_u64(x as u64);
+    }
+    #[inline]
+    fn write_usize(&mut self, x: usize) {
+        self.write_u64(x as u64);
+    }
+    #[inline]
+    fn finish(&self) -> u64 {
+        self.0
+    }
+}
+
+pub type HashMap<K, V> = std::collections::HashMap<K, V, BuildHasherDefault<FastHasher>>;
 
 use crate::hand_range::*;
 use crate::isomorphism::*;
@@ -113,11 +145,11 @@ impl RangeManager {
     }
     
     pub fn new(mut oop_starting_hands: HandRange, mut ip_starting_hands: HandRange, initial_board: String) -> RangeManager {
-        let mut oop_board_range = HashMap::new();
-        let mut ip_board_range = HashMap::new();
-        let oop_reach_mapping = HashMap::new();
-        let ip_reach_mapping = HashMap::new();
-        let mut board_deck = HashMap::new();
+        let mut oop_board_range = HashMap::default();
+        let mut ip_board_range = HashMap::default();
+        let oop_reach_mapping = HashMap::default();
+        let ip_reach_mapping = HashMap::default();
+        let mut board_deck = HashMap::default();
         let initial_board = if initial_board.len() == 6 {
             normalize_flop(&initial_board)
         } else {
