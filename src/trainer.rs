@@ -48,6 +48,9 @@ impl Trainer {
             },
         };
         let mut time_elapsed = now.elapsed().as_secs_f64();
+        // a best response costs about one iteration, so exploitability is only checked now and then
+        let mut next_check = 20;
+        let mut last_check: Option<(u64, f64)> = None;
         loop {
             time_elapsed = now.elapsed().as_secs_f64();
             match train_finish {
@@ -68,17 +71,33 @@ impl Trainer {
             
             cfr_aux(true, &mut self.root, i, &self.range_manager);
             cfr_aux(false, &mut self.root, i, &self.range_manager);
-            if i % 25 == 0 {
-                let exploitability = best_response.print_exploitability(&self.root, time_elapsed);
+            i += 1;
+            if i == next_check {
+                let exploitability = best_response.print_exploitability(&self.root, now.elapsed().as_secs_f64());
                 if exploitability <= exploitability_goal {
                     break;
                 }
+                next_check = next_exploitability_check(i, exploitability, last_check, exploitability_goal);
+                last_check = Some((i, exploitability));
             }
-            i += 1;
         }
 
         //println!("Elapsed: {} seconds", time_elapsed);
     }
+}
+
+/// Iteration of the next exploitability check: exploitability falls roughly like C / t^p, so the
+/// last two checks predict when the goal is reached. Checks stay 3 to 25 iterations apart.
+fn next_exploitability_check(iteration: u64, exploitability: f64, last_check: Option<(u64, f64)>, goal: f64) -> u64 {
+    let (min_gap, max_gap) = (3, 25);
+    if let Some((last_iteration, last_exploitability)) = last_check {
+        if goal > 0.0 && exploitability > goal && exploitability < last_exploitability {
+            let p = (last_exploitability / exploitability).ln() / (iteration as f64 / last_iteration as f64).ln();
+            let predicted = iteration as f64 * (exploitability / goal).powf(1.0 / p);
+            return (predicted.ceil() as u64).clamp(iteration + min_gap, iteration + max_gap);
+        }
+    }
+    iteration + max_gap
 }
 
 fn cfr_aux(pos: bool, root: &mut Node, n_iteration: u64, range_manager: &RangeManager) {
