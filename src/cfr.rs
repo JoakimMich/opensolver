@@ -22,15 +22,15 @@ impl<'a> CfrState<'a> {
     pub fn run(&mut self) {
         let ctx = Ctx { range_manager: self.range_manager, oop: self.oop, n_iterations: self.n_iterations };
         let (hero_range, villain_range) = ctx.ranges(self.board_masks);
-        // CFR runs in f32
-        let villain_reach_probs: Vec<f32> = self.villain_reach_probs.iter().map(|&x| x as f32).collect();
-        let mut result = vec![0.0f32; hero_range.len()];
+        // CFR runs in Real
+        let villain_reach_probs: Vec<Real> = self.villain_reach_probs.iter().map(|&x| x as Real).collect();
+        let mut result = vec![0.0 as Real; hero_range.len()];
         cfr(&ctx, &mut result, self.node, &villain_reach_probs, hero_range, villain_range);
         *self.result = result.iter().map(|&x| x as f64).collect();
     }
 }
 
-/// f32 for CFR, f64 for best response
+/// Real for CFR, f64 for best response
 pub trait Float: Copy + Default + std::ops::Add<Output = Self> + std::ops::Sub<Output = Self> + std::ops::Mul<Output = Self> + std::ops::AddAssign + std::ops::SubAssign {}
 impl Float for f32 {}
 impl Float for f64 {}
@@ -56,22 +56,22 @@ impl<'a> Ctx<'a> {
 
 /// Writes the hero's counterfactual value of every hand at `node` into `result` (len = hero hands).
 /// `hero_range`/`villain_range` are the ranges on the current board.
-fn cfr(ctx: &Ctx, result: &mut [f32], node: &mut Node, villain_reach_probs: &[f32], hero_range: &[Combo], villain_range: &[Combo]) {
+fn cfr(ctx: &Ctx, result: &mut [Real], node: &mut Node, villain_reach_probs: &[Real], hero_range: &[Combo], villain_range: &[Combo]) {
     match node.node_type {
         NodeType::TerminalNode(TerminalType::TerminalShowdown) => {
-            showdown_payoffs(result, hero_range, villain_range, villain_reach_probs, node.pot_size as f32);
+            showdown_payoffs(result, hero_range, villain_range, villain_reach_probs, node.pot_size as Real);
         },
         NodeType::TerminalNode(TerminalType::TerminalFold(fold_position)) => {
-            let value = if ctx.oop == fold_position { -(node.pot_size as f32) } else { node.pot_size as f32 };
+            let value = if ctx.oop == fold_position { -(node.pot_size as Real) } else { node.pot_size as Real };
             fold_payoffs(result, hero_range, villain_range, villain_reach_probs, value);
         },
         NodeType::ChanceNodeCard(_) => {
             cfr(ctx, result, &mut node.children[0], villain_reach_probs, hero_range, villain_range);
         },
-        NodeType::ChanceNode(deck_left) => {
+        NodeType::ChanceNode(deck_left, board) => {
             // Cards are dealt in parallel; this is where all of the solver's parallelism comes from
             let oop = ctx.oop;
-            let child_results: Vec<Vec<f32>> = node.children.par_iter_mut()
+            let child_results: Vec<Vec<Real>> = node.children.par_iter_mut()
                 .map(|child| {
                     let board_masks = match child.node_type {
                         NodeType::ChanceNodeCard(board_masks) => board_masks,
@@ -83,33 +83,14 @@ fn cfr(ctx: &Ctx, result: &mut [f32], node: &mut Node, villain_reach_probs: &[f3
                         cfr(ctx, &mut results, child, villain_reach_probs, hero_range, villain_range);
                     } else {
                         let reach_mapping = ctx.range_manager.get_reach_mapping(!oop, board_masks.0, board_masks.1);
-                        let new_villain_reach_probs: Vec<f32> = reach_mapping.iter().map(|&m| unsafe { *villain_reach_probs.get_unchecked(m as usize) }).collect();
+                        let new_villain_reach_probs: Vec<Real> = reach_mapping.iter().map(|&m| unsafe { *villain_reach_probs.get_unchecked(m as usize) }).collect();
                         cfr(ctx, &mut results, child, &new_villain_reach_probs, hero_range, villain_range);
                     }
                     results
                 })
                 .collect();
 
-            result.fill(0.0);
-            if deck_left != 0 {
-                let scale = 1.0/deck_left as f32;
-                for (child, results) in node.children.iter().zip(&child_results) {
-                    let board_masks = match child.node_type {
-                        NodeType::ChanceNodeCard(board_masks) => board_masks,
-                        _ => unreachable!(),
-                    };
-                    let reach_mapping = ctx.range_manager.get_reach_mapping(oop, board_masks.0, board_masks.1);
-                    for (&mapping, &value) in reach_mapping.iter().zip(results) {
-                        unsafe { *result.get_unchecked_mut(mapping as usize) += value * scale; }
-                    }
-                }
-            } else {
-                for (i, value) in result.iter_mut().enumerate() {
-                    for results in &child_results {
-                        *value += results[i];
-                    }
-                }
-            }
+            combine_chance_results(ctx.range_manager, oop, &node.children, &child_results, deck_left, board, result);
         },
         NodeType::ActionNode(ref mut node_info) => {
             let n_actions = node_info.actions_num;
@@ -155,6 +136,56 @@ fn cfr(ctx: &Ctx, result: &mut [f32], node: &mut Node, villain_reach_probs: &[f3
                 node_info.update_strategy_sum(&strategy, villain_reach_probs, ctx.n_iterations);
             }
         },
+    }
+}
+
+/// Chance node value: the average over all cards that can come of the dealt cards' values
+/// (`child_results`, indexed like the child ranges), plus the values of the isomorphic cards that
+/// were not dealt, which are the dealt card's values with the suits swapped
+pub fn combine_chance_results(range_manager: &RangeManager, oop: bool, children: &[Node], child_results: &[Vec<Real>], deck_left: u8, board: u64, result: &mut [Real]) {
+    result.fill(0.0);
+    if deck_left == 0 {
+        // root: the initial board
+        for (i, value) in result.iter_mut().enumerate() {
+            for results in child_results {
+                *value += results[i];
+            }
+        }
+        return;
+    }
+
+    let scale = 1.0/deck_left as Real;
+    let iso = range_manager.get_isomorphism(board).unwrap();
+    let perms = if oop { &iso.oop_perms } else { &iso.ip_perms };
+    let mut dealt_values = vec![];
+
+    for (index, (child, results)) in children.iter().zip(child_results).enumerate() {
+        let board_masks = match child.node_type {
+            NodeType::ChanceNodeCard(board_masks) => board_masks,
+            _ => unreachable!(),
+        };
+        let reach_mapping = range_manager.get_reach_mapping(oop, board_masks.0, board_masks.1);
+        let skipped = &iso.skipped_by_canonical[index];
+
+        if skipped.is_empty() {
+            for (&mapping, &value) in reach_mapping.iter().zip(results) {
+                unsafe { *result.get_unchecked_mut(mapping as usize) += value * scale; }
+            }
+        } else {
+            dealt_values.clear();
+            dealt_values.resize(result.len(), 0.0 as Real);
+            for (&mapping, &value) in reach_mapping.iter().zip(results) {
+                unsafe { *dealt_values.get_unchecked_mut(mapping as usize) = value * scale; }
+            }
+            for (value, &dealt_value) in result.iter_mut().zip(&dealt_values) {
+                *value += dealt_value;
+            }
+            for &perm_id in skipped {
+                for (value, &swapped) in result.iter_mut().zip(&perms[perm_id]) {
+                    *value += unsafe { *dealt_values.get_unchecked(swapped as usize) };
+                }
+            }
+        }
     }
 }
 

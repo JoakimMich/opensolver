@@ -1,8 +1,12 @@
 use crate::range::*;
 use crate::cards::*;
 use crate::hand_range::Combo;
+use crate::isomorphism::swap_suit;
 use std::collections::HashMap;
 use std::fmt;
+
+/// Float type of the solver (f32 for speed; switch to f64 to check results against rounding)
+pub type Real = f32;
 
 // discount CFR params
 const ALPHA: f64 = 1.5;
@@ -22,8 +26,8 @@ pub enum TerminalType {
 pub struct ActionNodeInfo {
     pub oop: bool,
     pub actions: Vec<ActionType>,
-    pub strategy_sum: Vec<f32>,
-    regret_sum: Vec<f32>,
+    pub strategy_sum: Vec<Real>,
+    regret_sum: Vec<Real>,
     pub actions_num: usize,
     hands_num: usize,
 }
@@ -38,10 +42,10 @@ impl ActionNodeInfo {
     }
 
     /// Regret matching, action-major ([action][hand])
-    pub fn get_current_strategy(&self) -> Vec<f32> {
+    pub fn get_current_strategy(&self) -> Vec<Real> {
         let hands = self.hands_num;
-        let mut strategy = vec![0.0f32; self.regret_sum.len()];
-        let mut sums = vec![0.0f32; hands];
+        let mut strategy = vec![0.0 as Real; self.regret_sum.len()];
+        let mut sums = vec![0.0 as Real; hands];
 
         for (probs, regrets) in strategy.chunks_exact_mut(hands).zip(self.regret_sum.chunks_exact(hands)) {
             for ((prob, sum), &regret) in probs.iter_mut().zip(sums.iter_mut()).zip(regrets) {
@@ -51,7 +55,7 @@ impl ActionNodeInfo {
             }
         }
 
-        let uniform = 1.0/self.actions_num as f32;
+        let uniform = 1.0/self.actions_num as Real;
         for probs in strategy.chunks_exact_mut(hands) {
             for (prob, &sum) in probs.iter_mut().zip(&sums) {
                 *prob = if sum > 0.0 { *prob / sum } else { uniform };
@@ -63,11 +67,11 @@ impl ActionNodeInfo {
 
     /// Adds this iteration's regrets and applies the DCFR discount. `action_results` holds the
     /// value of every hand for each action ([action][hand]), `node_values` the value of the node.
-    pub fn update_regret_sum(&mut self, action_results: &[f32], node_values: &[f32], n_iterations: u64) {
+    pub fn update_regret_sum(&mut self, action_results: &[Real], node_values: &[Real], n_iterations: u64) {
         let mut x = f64::powf(n_iterations as f64, ALPHA);
         x = x / (x + 1.0);
-        let x = x as f32;
-        let beta = BETA as f32;
+        let x = x as Real;
+        let beta = BETA as Real;
         let hands = self.hands_num;
 
         for (regrets, results) in self.regret_sum.chunks_exact_mut(hands).zip(action_results.chunks_exact(hands)) {
@@ -79,8 +83,8 @@ impl ActionNodeInfo {
     }
 
     /// `strategy` is action-major ([action][hand])
-    pub fn update_strategy_sum(&mut self, strategy: &[f32], reach_probs: &[f32], n_iterations: u64 ) {
-        let x = f64::powf(n_iterations as f64 / (n_iterations as f64 + 1.0), GAMMA) as f32;
+    pub fn update_strategy_sum(&mut self, strategy: &[Real], reach_probs: &[Real], n_iterations: u64 ) {
+        let x = f64::powf(n_iterations as f64 / (n_iterations as f64 + 1.0), GAMMA) as Real;
         let hands = self.hands_num;
         for (sums, probs) in self.strategy_sum.chunks_exact_mut(hands).zip(strategy.chunks_exact(hands)) {
             for ((sum, &prob), &reach_prob) in sums.iter_mut().zip(probs).zip(reach_probs) {
@@ -89,17 +93,17 @@ impl ActionNodeInfo {
         }
     }
 
-    /// Average strategy in f32, action-major ([action][hand])
-    pub fn get_average_strategy_by_action(&self) -> Vec<f32> {
+    /// Average strategy in Real, action-major ([action][hand])
+    pub fn get_average_strategy_by_action(&self) -> Vec<Real> {
         let hands = self.hands_num;
-        let mut totals = vec![0.0f32; hands];
+        let mut totals = vec![0.0 as Real; hands];
         for sums in self.strategy_sum.chunks_exact(hands) {
             for (total, &sum) in totals.iter_mut().zip(sums) {
                 *total += sum;
             }
         }
 
-        let uniform = 1.0/self.actions_num as f32;
+        let uniform = 1.0/self.actions_num as Real;
         let mut average_strategy = self.strategy_sum.clone();
         for probs in average_strategy.chunks_exact_mut(hands) {
             for (prob, &total) in probs.iter_mut().zip(&totals) {
@@ -136,7 +140,8 @@ impl ActionNodeInfo {
 pub enum NodeType {
     ActionNode(ActionNodeInfo),
     TerminalNode(TerminalType),
-    ChanceNode(u8),
+    /// (cards left minus both players' hole cards, board mask)
+    ChanceNode(u8, u64),
     ChanceNodeCard((u64, Option<u64>)),
 }
 
@@ -201,10 +206,31 @@ fn hand_order_index(hand: &Combo, hand_order_mapping: &HashMap<String, usize>) -
     }
 }
 
+/// A card with its suit replaced through `suit_map`
+fn map_card(card: u8, suit_map: &[u8; 4]) -> u8 {
+    (card & !3) | suit_map[(card & 3) as usize]
+}
+
+fn map_combo(combo: &Combo, suit_map: &[u8; 4]) -> Combo {
+    Combo(map_card(combo.0, suit_map), map_card(combo.1, suit_map), combo.2, combo.3, combo.4)
+}
+
+fn invert_suit_map(suit_map: &[u8; 4]) -> [u8; 4] {
+    let mut inverse = [0; 4];
+    for (suit, &mapped) in suit_map.iter().enumerate() {
+        inverse[mapped as usize] = suit as u8;
+    }
+    inverse
+}
+
 /// Where a UPI line leads: the node and the chips invested along the way
 struct LineState<'a> {
     node: &'a Node,
     board: String,
+    /// The board in the tree: isomorphic cards are replaced by the card that was dealt instead
+    tree_board: String,
+    /// suit_map[real suit] = suit in the tree
+    suit_map: [u8; 4],
     oop_invested: u32,
     ip_invested: u32,
     start_pot: u32,
@@ -213,7 +239,7 @@ struct LineState<'a> {
 
 impl Node {
     pub fn new_root(chance_start_stack: u32, pot_size: u32) -> Node {
-        Node { node_type: NodeType::ChanceNode(0), children: vec![] , pot_size, chance_start_stack, oop_invested: 0, ip_invested: 0, chance_start_pot: pot_size }
+        Node { node_type: NodeType::ChanceNode(0, 0), children: vec![] , pot_size, chance_start_stack, oop_invested: 0, ip_invested: 0, chance_start_pot: pot_size }
     }
 
     /// A node on the same street as `self`
@@ -233,7 +259,7 @@ impl Node {
 
     /// Follows a UPI line (e.g. "r:0:c:b94:QdKs") from the root. `on_action` is called for every
     /// action taken along the way, with the acting node, the index of the action and the board.
-    fn walk_line<'a>(&'a self, line: &str, range_manager: &RangeManager, mut on_action: impl FnMut(&ActionNodeInfo, usize, &str)) -> LineState<'a> {
+    fn walk_line<'a>(&'a self, line: &str, range_manager: &RangeManager, mut on_action: impl FnMut(&ActionNodeInfo, usize, &LineState)) -> LineState<'a> {
         let v = line.split(':').collect::<Vec<&str>>();
 
         //todo: better error handling
@@ -244,6 +270,8 @@ impl Node {
         let mut state = LineState {
             node: if line == "r" { &self.children[0] } else { &self.children[0].children[0] },
             board: range_manager.initial_board.clone(),
+            tree_board: range_manager.initial_board.clone(),
+            suit_map: [0, 1, 2, 3],
             oop_invested: 0,
             ip_invested: 0,
             start_pot: self.children[0].pot_size,
@@ -279,7 +307,7 @@ impl Node {
                 };
                 //todo: better error handling
                 let action_num = node_info.actions.iter().position(|a| *a == action_lookup).expect("Couldn't find line");
-                on_action(node_info, action_num, &state.board);
+                on_action(node_info, action_num, &state);
 
                 if let Some(sizing) = invested {
                     if node_info.oop {
@@ -294,8 +322,19 @@ impl Node {
                 state.node = &state.node.children[action_num];
             } else {
                 // todo: error handling for invalid input cards
-                let new_board = format!("{}{}", state.board, &action[0..2]);
-                let new_key = range_key(range_manager, &new_board);
+                let real_card = get_card_mask(&action[0..2]).trailing_zeros() as u8;
+                let mut tree_card = map_card(real_card, &state.suit_map);
+                // A skipped card continues in the subtree of its isomorphic card, with suits swapped
+                if let Some(iso) = range_manager.get_isomorphism(get_card_mask(&state.tree_board)) {
+                    if let Some(skipped) = iso.skipped.iter().find(|c| c.card == tree_card) {
+                        tree_card = swap_suit(tree_card, skipped.swap);
+                        for suit in state.suit_map.iter_mut() {
+                            *suit = swap_suit(*suit, skipped.swap);
+                        }
+                    }
+                }
+                let new_tree_board = format!("{}{}", state.tree_board, mask_to_string(1u64 << tree_card));
+                let new_key = range_key(range_manager, &new_tree_board);
                 let card_node = state.node.children.iter().find(|child| match child.node_type {
                     NodeType::ChanceNodeCard(key) => key == new_key,
                     _ => false,
@@ -303,7 +342,8 @@ impl Node {
                 if let Some(card_node) = card_node {
                     state.node = &card_node.children[0];
                 }
-                state.board = new_board;
+                state.board = format!("{}{}", state.board, &action[0..2]);
+                state.tree_board = new_tree_board;
             }
             latest_action = action;
         }
@@ -382,7 +422,7 @@ impl Node {
                             (oop_invested, ip_invested) = (called, called);
                             ("c".to_string(), "END_NODE", 0)
                         },
-                        NodeType::ChanceNode(children_count) => {
+                        NodeType::ChanceNode(children_count, _) => {
                             (oop_invested, ip_invested) = (called, called);
                             ("c".to_string(), "SPLIT_NODE", *children_count as u32)
                         },
@@ -393,14 +433,18 @@ impl Node {
                 }
                 children_info
             },
-            NodeType::ChanceNode(_) => {
+            NodeType::ChanceNode(..) => {
+                // Every card that can come, including the isomorphic ones that were not dealt
                 let board_mask = get_card_mask(&state.board);
-                node.children.iter().map(|child| {
-                    let new_card = match child.node_type {
-                        NodeType::ChanceNodeCard((new_board_mask, _)) => mask_to_string(new_board_mask & !board_mask),
-                        _ => panic!("all children in chance node should be ChanceNodeCard"),
+                let iso = range_manager.get_isomorphism(get_card_mask(&state.tree_board)).unwrap();
+                (0..52u8).filter(|card| board_mask & (1u64 << card) == 0).map(|real_card| {
+                    let tree_card = map_card(real_card, &state.suit_map);
+                    let child_index = match iso.deck.iter().position(|&card| card == tree_card) {
+                        Some(index) => index,
+                        None => iso.skipped.iter().find(|c| c.card == tree_card).unwrap().canonical_index,
                     };
-                    NodeInfo { line: format!("{}:{}", line, new_card), node_type: "OOP_DEC".to_string(), board: format!("{}{}", state.board, new_card), pot: (state.oop_invested, state.ip_invested, state.start_pot), children_count: child.children[0].children.len() as u32, flags: vec![] }
+                    let new_card = mask_to_string(1u64 << real_card);
+                    NodeInfo { line: format!("{}:{}", line, new_card), node_type: "OOP_DEC".to_string(), board: format!("{}{}", state.board, new_card), pot: (state.oop_invested, state.ip_invested, state.start_pot), children_count: node.children[child_index].children[0].children.len() as u32, flags: vec![] }
                 }).collect()
             },
             NodeType::ChanceNodeCard(_) => {
@@ -418,11 +462,12 @@ impl Node {
         match &state.node.node_type {
             NodeType::ActionNode(node_info) => {
                 let mut final_strategy = vec![vec![0.0; hand_order_mapping.len()]; node_info.actions_num];
-                let key = range_key(range_manager, &state.board);
+                let key = range_key(range_manager, &state.tree_board);
                 let player_range = &range_manager.get_range(node_info.oop, key.0, key.1).hands;
                 let average_strategy = node_info.get_average_strategy();
+                let real_suits = invert_suit_map(&state.suit_map);
                 for (hand, action_freqs) in player_range.iter().zip(average_strategy.chunks(node_info.actions_num)) {
-                    let hand_idx = hand_order_index(hand, hand_order_mapping);
+                    let hand_idx = hand_order_index(&map_combo(hand, &real_suits), hand_order_mapping);
                     for (i, action_freq) in action_freqs.iter().enumerate() {
                         final_strategy[i][hand_idx] = *action_freq;
                     }
@@ -439,16 +484,17 @@ impl Node {
             final_range[hand_order_index(hand, hand_order_mapping)] = hand.2 as f64 / 100.0;
         }
 
-        self.walk_line(&line, range_manager, |node_info, action_num, board| {
+        self.walk_line(&line, range_manager, |node_info, action_num, state| {
             if node_info.oop != oop {
                 return;
             }
             //todo: remove hands from final_range which are impossible due to blockers?
-            let key = range_key(range_manager, board);
+            let key = range_key(range_manager, &state.tree_board);
             let player_range = &range_manager.get_range(oop, key.0, key.1).hands;
             let average_strategy = node_info.get_average_strategy();
+            let real_suits = invert_suit_map(&state.suit_map);
             for (hand, action_freqs) in player_range.iter().zip(average_strategy.chunks(node_info.actions_num)) {
-                final_range[hand_order_index(hand, hand_order_mapping)] *= action_freqs[action_num];
+                final_range[hand_order_index(&map_combo(hand, &real_suits), hand_order_mapping)] *= action_freqs[action_num];
             }
         });
 
@@ -519,11 +565,12 @@ fn with_sizings(mut actions: Vec<ActionType>, sizing_mapping: &HashMap<String, V
 }
 
 /// Node that follows once betting on the current street is closed
-fn street_end(range_manager: &RangeManager, board: &str) -> NodeType {
+fn street_end(board: &str) -> NodeType {
     if board.len() == 10 {
         NodeType::TerminalNode(TerminalType::TerminalShowdown)
     } else {
-        NodeType::ChanceNode((range_manager.get_board_deck(get_card_mask(board)).len() - 4).try_into().unwrap())
+        // the divisor counts every card left, including the isomorphic ones that are not dealt
+        NodeType::ChanceNode((52 - board.len()/2 - 4) as u8, get_card_mask(board))
     }
 }
 
@@ -539,7 +586,7 @@ pub fn build_tree(root: &mut Node, sizing_mapping: &HashMap<String, Vec<ActionTy
 fn recursive_build(sizing_mapping: &HashMap<String, Vec<ActionType>>, action_line: &str, current_node: &mut Node, range_manager: &RangeManager, current_board: &str) {
     match &current_node.node_type {
         NodeType::TerminalNode(_) => (),
-        NodeType::ChanceNode(_) => {
+        NodeType::ChanceNode(..) => {
             // Deal the next street
             if current_board.len() != 6 && current_board.len() != 8 {
                 panic!("Current board must be either length of flop or turn");
@@ -590,10 +637,10 @@ fn recursive_build(sizing_mapping: &HashMap<String, Vec<ActionType>>, action_lin
                         (child_line, NodeType::ActionNode(node_info), current_node.pot_size, 0, 0)
                     },
                     ActionType::Check => {
-                        (format!("{}:x", action_line), street_end(range_manager, current_board), current_node.pot_size, 0, 0)
+                        (format!("{}:x", action_line), street_end(current_board), current_node.pot_size, 0, 0)
                     },
                     ActionType::Call => {
-                        (format!("{}:c", action_line), street_end(range_manager, current_board), current_node.pot_size + facing, 0, 0)
+                        (format!("{}:c", action_line), street_end(current_board), current_node.pot_size + facing, 0, 0)
                     },
                     ActionType::Bet(sizing) | ActionType::Raise{sizing} => {
                         let child_line = match action {

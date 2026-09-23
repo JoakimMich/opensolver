@@ -1,6 +1,6 @@
 use crate::range::*;
 use crate::postfloptree::*;
-use crate::cfr::{showdown_payoffs, fold_payoffs};
+use crate::cfr::{showdown_payoffs, fold_payoffs, combine_chance_results};
 use crate::hand_range::*;
 use crate::cards::get_card_mask;
 use rayon::prelude::*;
@@ -31,10 +31,10 @@ impl<'a> BestResponse<'a> {
             true => &self.oop_relative_probs,
             false => &self.ip_relative_probs,
         };
-        let villain_reach_probs: Vec<f32> = self.range_manager.get_initial_reach_probs(!pos).iter().map(|&x| x as f32).collect();
+        let villain_reach_probs: Vec<Real> = self.range_manager.get_initial_reach_probs(!pos).iter().map(|&x| x as Real).collect();
 
         let ctx = Ctx { range_manager: self.range_manager, oop: pos };
-        let mut ev_results = vec![0.0f32; hero_range.len()];
+        let mut ev_results = vec![0.0 as Real; hero_range.len()];
         best_response(&ctx, &mut ev_results, root, &villain_reach_probs, hero_range, villain_range);
 
         let mut total_ev = 0.0;
@@ -136,59 +136,40 @@ impl<'a> Ctx<'a> {
 
 /// Writes the value of every hero hand at `node` into `result` when the hero plays a best response
 /// against the villain's average strategy
-fn best_response(ctx: &Ctx, result: &mut [f32], node: &Node, villain_reach_probs: &[f32], hero_range: &[Combo], villain_range: &[Combo]) {
+fn best_response(ctx: &Ctx, result: &mut [Real], node: &Node, villain_reach_probs: &[Real], hero_range: &[Combo], villain_range: &[Combo]) {
     match node.node_type {
         NodeType::TerminalNode(TerminalType::TerminalShowdown) => {
-            showdown_payoffs(result, hero_range, villain_range, villain_reach_probs, node.pot_size as f32);
+            showdown_payoffs(result, hero_range, villain_range, villain_reach_probs, node.pot_size as Real);
         },
         NodeType::TerminalNode(TerminalType::TerminalFold(fold_position)) => {
-            let value = if ctx.oop == fold_position { -(node.pot_size as f32) } else { node.pot_size as f32 };
+            let value = if ctx.oop == fold_position { -(node.pot_size as Real) } else { node.pot_size as Real };
             fold_payoffs(result, hero_range, villain_range, villain_reach_probs, value);
         },
         NodeType::ChanceNodeCard(_) => {
             best_response(ctx, result, &node.children[0], villain_reach_probs, hero_range, villain_range);
         },
-        NodeType::ChanceNode(deck_left) => {
+        NodeType::ChanceNode(deck_left, board) => {
             let oop = ctx.oop;
-            let child_results: Vec<Vec<f32>> = node.children.par_iter()
+            let child_results: Vec<Vec<Real>> = node.children.par_iter()
                 .map(|child| {
                     let board_masks = match child.node_type {
                         NodeType::ChanceNodeCard(board_masks) => board_masks,
                         _ => unreachable!(),
                     };
                     let (hero_range, villain_range) = ctx.ranges(board_masks);
-                    let mut results = vec![0.0f32; hero_range.len()];
+                    let mut results = vec![0.0 as Real; hero_range.len()];
                     if deck_left == 0 {
                         best_response(ctx, &mut results, child, villain_reach_probs, hero_range, villain_range);
                     } else {
                         let reach_mapping = ctx.range_manager.get_reach_mapping(!oop, board_masks.0, board_masks.1);
-                        let new_villain_reach_probs: Vec<f32> = reach_mapping.iter().map(|&m| unsafe { *villain_reach_probs.get_unchecked(m as usize) }).collect();
+                        let new_villain_reach_probs: Vec<Real> = reach_mapping.iter().map(|&m| unsafe { *villain_reach_probs.get_unchecked(m as usize) }).collect();
                         best_response(ctx, &mut results, child, &new_villain_reach_probs, hero_range, villain_range);
                     }
                     results
                 })
                 .collect();
 
-            result.fill(0.0);
-            if deck_left != 0 {
-                let scale = 1.0/deck_left as f32;
-                for (child, results) in node.children.iter().zip(&child_results) {
-                    let board_masks = match child.node_type {
-                        NodeType::ChanceNodeCard(board_masks) => board_masks,
-                        _ => unreachable!(),
-                    };
-                    let reach_mapping = ctx.range_manager.get_reach_mapping(oop, board_masks.0, board_masks.1);
-                    for (&mapping, &value) in reach_mapping.iter().zip(results) {
-                        unsafe { *result.get_unchecked_mut(mapping as usize) += value * scale; }
-                    }
-                }
-            } else {
-                for (i, value) in result.iter_mut().enumerate() {
-                    for results in &child_results {
-                        *value += results[i];
-                    }
-                }
-            }
+            combine_chance_results(ctx.range_manager, oop, &node.children, &child_results, deck_left, board, result);
         },
         NodeType::ActionNode(ref node_info) => {
             if node_info.actions_num == 1 {
@@ -197,7 +178,7 @@ fn best_response(ctx: &Ctx, result: &mut [f32], node: &Node, villain_reach_probs
                 return;
             }
 
-            let mut results = vec![0.0f32; result.len()];
+            let mut results = vec![0.0 as Real; result.len()];
             if node_info.oop == ctx.oop {
                 // Hero picks the best action for every hand
                 best_response(ctx, result, &node.children[0], villain_reach_probs, hero_range, villain_range);
@@ -210,7 +191,7 @@ fn best_response(ctx: &Ctx, result: &mut [f32], node: &Node, villain_reach_probs
             } else {
                 // Villain plays its average strategy
                 let average_strategy = node_info.get_average_strategy_by_action();
-                let mut new_villain_reach_probs = vec![0.0f32; villain_reach_probs.len()];
+                let mut new_villain_reach_probs = vec![0.0 as Real; villain_reach_probs.len()];
                 result.fill(0.0);
                 for (child, probs) in node.children.iter().zip(average_strategy.chunks_exact(villain_reach_probs.len())) {
                     for ((reach_prob, &prob), &villain_reach_prob) in new_villain_reach_probs.iter_mut().zip(probs).zip(villain_reach_probs) {
